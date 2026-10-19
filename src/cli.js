@@ -1,7 +1,7 @@
 import { listSupportedRoutes, getBridgeQuote, getPolymarketOnboardPlan, getHyperliquidOnboardPlan, planMultiWalletGasRefuel, checkBridgeOrderStatus } from './service.js';
 import { startMcpServer } from './mcp-server.js';
 import { DEFAULT_FEE_BPS, formatUnits } from './constants.js';
-export const HELP = `omniroute-bridge 1.0.0 — Relay cross-chain terminal
+export const HELP = `omniroute-bridge 1.1.0 — Relay cross-chain terminal
 
 Usage:
   omniroute-bridge mcp | --mcp | --stdio
@@ -41,7 +41,7 @@ function routeSummary(quotes) {
 export async function runCli(argv, { stdout = process.stdout, stderr = process.stderr, ...options } = {}) {
   try {
     if (!argv.length || argv[0] === '--help' || argv[0] === '-h') { stdout.write(HELP); return 0; }
-    if (argv[0] === '--version') { stdout.write('1.0.0\n'); return 0; }
+    if (argv[0] === '--version') { stdout.write('1.1.0\n'); return 0; }
     const [command, ...args] = argv;
     if (['mcp', '--mcp', '--stdio'].includes(command)) { if (args.length) throw new Error('MCP mode does not accept flags'); await startMcpServer({ ...options, output: stdout }); return 0; }
     if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
