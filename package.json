@@ -1,0 +1,17 @@
+{
+  "name": "omniroute-bridge-mcp",
+  "version": "1.0.0",
+  "description": "Instant cross-chain bridge, Polymarket & Hyperliquid one-click onboarding, and multi-wallet gas refuel MCP server & CLI powered by Relay Protocol.",
+  "type": "module",
+  "bin": { "omniroute-bridge": "./bin/omniroute.js", "omniroute-bridge-mcp": "./bin/omniroute.js" },
+  "main": "./src/index.js",
+  "exports": { ".": "./src/index.js" },
+  "files": ["src", "bin", "docs", "README.md", "LICENSE"],
+  "scripts": { "test": "node --test test/*.test.js", "start": "node ./bin/omniroute.js mcp" },
+  "keywords": ["mcp", "model-context-protocol", "cross-chain-bridge", "polymarket", "hyperliquid", "hyperevm", "relay-protocol", "gas-refuel", "solana", "base", "arbitrum", "polygon", "defi", "web3", "crypto-cli"],
+  "author": "c-viper-work <318442063+c-viper-work@users.noreply.github.com>",
+  "repository": { "type": "git", "url": "https://github.com/c-viper-work/omniroute-bridge-mcp" },
+  "license": "MIT",
+  "engines": { "node": ">=18.0.0" },
+  "dependencies": {}
+}

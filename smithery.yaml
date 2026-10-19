@@ -1,0 +1,8 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+    additionalProperties: false
+  commandFunction: |-
+    () => ({ command: 'node', args: ['bin/omniroute.js', 'mcp'] })
