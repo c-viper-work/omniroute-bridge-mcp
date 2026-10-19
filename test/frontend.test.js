@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { getBridgeQuote, getPolymarketOnboardPlan, getHyperliquidOnboardPlan, planMultiWalletGasRefuel } from '../docs/lib/service.js';
 import { WalletExecutor, preflight, cliCommand, shellQuote } from '../docs/lib/wallet.js';
 import { USER, mockRelay } from './helpers.js';
+import { DEFAULT_EVM_USER, DEFAULT_SOLANA_USER } from '../docs/lib/constants.js';
 const html = await readFile(new URL('../docs/index.html', import.meta.url), 'utf8');
 const app = await readFile(new URL('../docs/app.js', import.meta.url), 'utf8');
 const FEE = [{ recipient: '0x8c2279495094C284e1293cdE9DBC52cc4f55C6bd', fee: '30' }];
@@ -90,6 +91,113 @@ test('CLI export quotes shell metacharacters and includes all route inputs',()=>
   const c=cliCommand('polymarket',{...bridgeArgs,includeGasTopup:false,gasTopupAmountUsd:'2'});assert.match(c,/--no-gas/);assert.match(c,/--sender '/);assert.match(c,/--gas-usd '2'/);assert.ok(c.endsWith('--json'));
 });
 // Minimal DOM harness executes the real browser event handlers with synthetic Relay/provider.
+test('quick controls are non-submit buttons and CSP remains exact', () => {
+  for (const id of ['amt-01', 'amt-1', 'amt-25', 'amt-100', 'amt-500', 'preset-polymarket', 'preset-hyperliquid', 'preset-solana']) {
+    const tag = html.match(new RegExp(`<button[^>]*id="${id}"[^>]*>`))?.[0];
+    assert.ok(tag, id); assert.match(tag, /type="button"/);
+  }
+  assert.equal(html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1], "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src https://api.relay.link; img-src 'self' data:; base-uri 'none'; form-action 'none'");
+});
+test('quick amount chips update amount and invalidate quotes without fetching', async () => {
+  const { els, relay } = await ui();
+  for (const [id, amount] of [['amt-01', '0.1'], ['amt-1', '1'], ['amt-25', '25'], ['amt-100', '100'], ['amt-500', '500']]) {
+    els.get('amount').value = '2'; await els.get('quote-form').fire('submit');
+    const count = relay.calls.length;
+    await els.get(id).click();
+    assert.equal(els.get('amount').value, amount); assert.equal(relay.calls.length, count);
+    assert.equal(els.get('copy-json').disabled, true); assert.equal(els.get('results').children.length, 0);
+    assert.match(els.get('budget').textContent, /source-token units/);
+  }
+});
+test('quick presets refresh token options, select tabs and submit actual route requests', async () => {
+  const { els, relay, wallet, context } = await ui();
+  const constants = await import('../docs/lib/constants.js');
+  for (const [preset, chain, token, amount, destinations] of [
+    ['solana', 'solana', 'SOL', '1', [8453]],
+    ['hyperliquid', 'base', 'ETH', '0.05', [999]],
+    ['polymarket', 'base', 'USDC', '100', [137, 137]],
+  ]) {
+    els.get('include-gas').checked = false; els.get('gas-usd').value = '9';
+    const start = relay.calls.length;
+    await els.get('preset-' + preset).click(); await els.get('quote-form').submission;
+    assert.equal(els.get('from-chain').value, chain); assert.equal(els.get('from-token').value, token); assert.equal(els.get('amount').value, amount);
+    assert.ok(els.get('from-token').children.some(o => o.value === token));
+    const requests = relay.calls.slice(start).map(c => c.payload);
+    assert.deepEqual(requests.map(p => p.destinationChainId), destinations);
+    assert.equal(requests[0].originCurrency, constants.CHAINS[chain].tokens[token].address);
+    assert.equal(requests[0].amount, constants.parseUnits(amount, constants.CHAINS[chain].tokens[token].decimals).toString());
+    assert.equal(els.get(preset === 'solana' ? 'tab-bridge' : 'tab-express').attributes['aria-selected'], 'true');
+    if (preset === 'solana') { assert.equal(els.get('to-token').value, 'USDC'); assert.equal(requests[0].destinationCurrency, constants.CHAINS.base.tokens.USDC.address); }
+    else assert.equal(els.get('express-mode').value, preset === 'polymarket' ? 'polymarket' : 'hyperevm_hype');
+    if (preset === 'polymarket') { assert.equal(els.get('include-gas').checked, true); assert.equal(els.get('gas-usd').value, '2'); }
+    await els.get('copy-json').click(); assert.ok(JSON.parse(context.copied).quotes.length);
+  }
+  assert.equal(wallet.calls.length, 0);
+});
+test('presets preserve recipients and reject malformed or wrong-VM input', async () => {
+  for (const preset of ['solana', 'polymarket', 'hyperliquid']) {
+    const { els, relay } = await ui();
+    await els.get('connect').click();
+    for (const recipient of ['0x1234', DEFAULT_SOLANA_USER, ` ${USER} `]) {
+      els.get('recipient').value = recipient;
+      const start = relay.calls.length;
+      await els.get('preset-' + preset).click(); await els.get('quote-form').submission;
+      assert.equal(els.get('recipient').value, recipient);
+      const requests = relay.calls.slice(start);
+      if (recipient.includes(USER)) {
+        assert.equal(requests.length, preset === 'polymarket' ? 2 : 1);
+        assert.ok(requests.every(c => c.payload.recipient === USER));
+        assert.equal(els.get('copy-json').disabled, false);
+      } else {
+        assert.equal(requests.length, 0);
+        assert.match(els.get('status').textContent, /Recipient must be a valid EVM address/);
+        assert.equal(els.get('execute').disabled, true);
+        assert.equal(els.get('copy-json').disabled, true);
+      }
+    }
+  }
+});
+test('presets preserve manual senders so invalid input fails validation', async () => {
+  for (const connected of [false, true]) {
+    for (const [preset, sender, vm] of [
+      ['solana', 'custom-sender', 'Solana'],
+      ['solana', '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd', 'Solana'],
+      ['polymarket', '0x1234', 'EVM'],
+      ['hyperliquid', DEFAULT_SOLANA_USER, 'EVM'],
+    ]) {
+      const { els, relay } = await ui();
+      if (connected) await els.get('connect').click();
+      els.get('sender').value = sender;
+      await els.get('preset-' + preset).click(); await els.get('quote-form').submission;
+      assert.equal(els.get('sender').value, sender);
+      assert.equal(relay.calls.length, 0);
+      assert.match(els.get('status').textContent, new RegExp(`Sender must be a valid ${vm} address`));
+      assert.equal(els.get('execute').disabled, true);
+    }
+  }
+});
+test('connected EVM wallet survives Solana and EVM preset round trips', async () => {
+  const { els, relay, wallet, context } = await ui();
+  await els.get('connect').click();
+  assert.equal(els.get('sender').value, USER);
+  await els.get('preset-solana').click(); await els.get('quote-form').submission;
+  assert.equal(els.get('sender').value, '');
+  assert.equal(els.get('recipient').value, '');
+  assert.equal(relay.calls.length, 1);
+  assert.equal(relay.calls[0].payload.destinationChainId, 8453);
+  assert.equal(relay.calls[0].payload.recipient, DEFAULT_EVM_USER);
+  assert.equal(els.get('copy-json').disabled, false);
+  await els.get('copy-json').click();
+  const solana = JSON.parse(context.copied).quotes[0];
+  assert.equal(solana.originChain.slug, 'solana');
+  assert.equal(solana.previewOnly, true);
+  await els.get('preset-polymarket').click(); await els.get('quote-form').submission;
+  assert.equal(els.get('sender').value, USER);
+  assert.deepEqual(relay.calls.slice(1).map(c => [c.payload.originChainId, c.payload.destinationChainId, c.payload.user]), [[8453, 137, USER], [8453, 137, USER]]);
+  assert.equal(els.get('copy-json').disabled, false);
+  assert.equal(els.get('execute').disabled, false);
+  assert.deepEqual(wallet.calls.map(c => c.method), ['eth_requestAccounts']);
+});
 async function ui() {
   class Element {
     constructor(id='') {this.id=id;this.children=[];this.listeners={};this.value='';this.disabled=false;this.dataset={};this.attributes={};}
@@ -100,8 +208,10 @@ async function ui() {
     setAttribute(k,v){this.attributes[k]=v;}
     focus(){this.focused=true;}
     click(){return this.fire('click');}
+    requestSubmit(){this.submission=this.fire('submit');}
   }
   const els=new Map([...html.matchAll(/id="([^"]+)"/g)].map(m=>[m[1],new Element(m[1])]));
+  for (const m of html.matchAll(/id="(amt-[^"]+)" data-amount="([^"]+)"/g)) els.get(m[1]).dataset.amount=m[2];
   const tabs=['tab-bridge','tab-express','tab-refuel'].map((id,i)=>{const e=els.get(id);e.dataset.mode=['quote','express','refuel'][i];return e;});
   els.get('express-mode').value='polymarket';els.get('gas-usd').value='2';els.get('include-gas').checked=true;
   const relay=mockRelay();const wallet=provider({eth_requestAccounts:()=>[USER]});const events={};wallet.on=(n,fn)=>events[n]=fn;
@@ -165,6 +275,20 @@ test('quote expiring during account checks stops before send', async () => {
   const wallet = provider({ eth_accounts: () => { now += 61000; return [USER]; } });
   await assert.rejects(new WalletExecutor(wallet, { now: () => now }).execute(p, USER), /expired/);
   assert.equal(wallet.calls.filter(c => c.method === 'eth_sendTransaction').length, 0);
+});
+test('UI renders object symbols as Unavailable without a coercion error', async () => {
+  const { els, context } = await ui();
+  context.getBridgeQuote = async () => {
+    const p = await fixture();
+    p.quotes[0].currencyOut.symbol = { toString: 'OUT' };
+    return p.quotes[0];
+  };
+  els.get('amount').value = '2';
+  await els.get('quote-form').fire('submit');
+  const walk = el => [el, ...el.children.flatMap(walk)];
+  assert.ok(walk(els.get('results')).some(el => el.textContent === '9.9 Unavailable'));
+  assert.equal(els.get('copy-json').disabled, false);
+  assert.doesNotMatch(els.get('status').textContent, /Cannot convert object to primitive value/);
 });
 test('UI renders malicious API strings only as inert text and handles quote errors', async () => {
   const { els, context } = await ui();

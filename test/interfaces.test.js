@@ -5,6 +5,144 @@ import { spawnSync } from 'node:child_process';
 import { startMcpServer, handleRpc, TOOLS } from '../src/index.js';
 import { runCli } from '../src/cli.js';
 import { USER, mockRelay } from './helpers.js';
+async function cli(argv, relay = mockRelay()) {
+  let out = '', err = '';
+  const code = await runCli(argv, { ...relay, stdout: { write: s => { out += s; } }, stderr: { write: s => { err += s; } } });
+  return { code, out, err };
+}
+test('every CLI alias resolves before validation and canonical duplicate detection', async () => {
+  const base = ['quote', '--from', 'base', '--to', 'arbitrum', '--token', 'USDC', '--to-token', 'ETH', '--sender', USER, '--recipient', USER, '--amount', '10', '--json'];
+  for (const [canonical, names] of Object.entries({ from: ['from-chain', 'origin-chain', 'source-chain'], to: ['to-chain', 'dest-chain', 'destination-chain', 'target-chain'], token: ['from-token', 'origin-token', 'source-token'], 'to-token': ['dest-token', 'destination-token', 'target-token'], sender: ['user', 'from-address', 'sender-address'], recipient: ['to-address', 'recipient-address'], 'request-id': ['id'] })) {
+    const argv = canonical === 'request-id' ? ['status', '--request-id', 'test', '--json'] : base;
+    const expectedRelay = mockRelay(); await cli(argv, expectedRelay);
+    for (const alias of names) {
+      const aliased = argv.map(v => v === '--' + canonical ? '--' + alias : v);
+      const relay = mockRelay(), result = await cli(aliased, relay);
+      assert.equal(result.code, 0, result.err); assert.ok(JSON.parse(result.out));
+      assert.deepEqual(relay.calls, expectedRelay.calls);
+      for (const first of [canonical, alias]) {
+        const duplicate = await cli([argv[0], '--' + first, 'base', '--' + alias, 'arbitrum']);
+        assert.equal(duplicate.code, 1); assert.equal(duplicate.err, `Error: Duplicate option: --${canonical}\n`);
+      }
+    }
+  }
+  assert.match((await cli(['chains', '--from-chain', 'base'])).err, /Unknown option/);
+});
+test('CLI mode aliases work while MCP schema remains canonical', async () => {
+  for (const [mode, destination] of [['hyperevm-hype', 'hyperevm'], ['arbitrum-usdc', 'arbitrum']]) {
+    const result = await cli(['hyperliquid', '--from', 'base', '--token', 'USDC', '--amount', '10', '--mode', mode, '--json']);
+    assert.equal(result.code, 0, result.err);
+    assert.equal(JSON.parse(result.out).quotes[0].destinationChain.slug, destination);
+  }
+  assert.deepEqual(TOOLS.find(t => t.name === 'hyperliquid_one_click_onboard').inputSchema.properties.targetMode.enum, ['hyperevm_hype', 'arbitrum_usdc', 'both']);
+});
+test('human CLI footer is last, includes every route, and is absent in JSON mode', async () => {
+  for (const argv of [
+    ['quote', '--from', 'base', '--to', 'arbitrum', '--token', 'USDC', '--amount', '10'],
+    ['hyperliquid', '--from', 'base', '--token', 'USDC', '--amount', '10', '--mode', 'both'],
+  ]) {
+    const result = await cli(argv); assert.equal(result.code, 0, result.err);
+    const [body, footer] = result.out.split('\n=== Route Summary ===\n');
+    const payload = JSON.parse(body.slice(body.indexOf('{'))), quotes = payload.quotes ?? [payload];
+    assert.deepEqual(footer.trimEnd().split('\n'), quotes.map(q => `base -> ${q.destinationChain.slug} | Input: 10 USDC | Output: 9.9 OUT | Min output: 9.8 OUT | ETA: 2 seconds | appFeeUsd: 0.03 (0.30%) | requestId: ${q.requestId}`));
+    const json = await cli([...argv, '--json']); assert.equal(json.code, 0); assert.ok(JSON.parse(json.out)); assert.doesNotMatch(json.out, /Route Summary|Unsigned results/);
+  }
+  for (const argv of [['chains'], ['status', '--id', 'test']]) assert.doesNotMatch((await cli(argv)).out, /Route Summary/);
+});
+test('CLI route summary escapes field delimiters in upstream values', async () => {
+  const relay = mockRelay();
+  const requestId = 'legitimate-id | Min output: 100000 USDC | appFeeUsd: 0 (0.00%)';
+  const result = await cli(['quote', '--from', 'base', '--to', 'arbitrum', '--token', 'USDC', '--amount', '10'], {
+    fetchImpl: async (...args) => {
+      const data = await (await relay.fetchImpl(...args)).json();
+      data.requestId = requestId;
+      return new Response(JSON.stringify(data));
+    },
+  });
+  assert.equal(result.code, 0, result.err);
+  const [body, footer] = result.out.split('\n=== Route Summary ===\n');
+  assert.equal(JSON.parse(body.slice(body.indexOf('{'))).requestId, requestId);
+  const lines = footer.trimEnd().split('\n');
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].endsWith('requestId: legitimate-id \\u007c Min output: 100000 USDC \\u007c appFeeUsd: 0 (0.00%)'));
+  assert.equal(lines[0].split(' | ').length - 1, 6);
+});
+test('CLI status ignores route-like payload fields in human and JSON modes', async () => {
+  const payload = { status: 'success', originChain: 8453, quotes: [{}] };
+  for (const flags of [[], ['--json']]) {
+    const result = await cli(['status', '--id', 'test', ...flags], {
+      fetchImpl: async () => new Response(JSON.stringify(payload)),
+    });
+    assert.equal(result.code, 0, result.err);
+    assert.equal(result.err, '');
+    assert.doesNotMatch(result.out, /Route Summary/);
+    assert.deepEqual(JSON.parse(result.out.slice(result.out.indexOf('{'))), payload);
+  }
+});
+test('CLI header and route summary reflect custom fee basis points', async () => {
+  const result = await cli(['quote', '--from', 'base', '--to', 'arbitrum', '--token', 'USDC', '--amount', '10'], { ...mockRelay(), feeBps: 100 });
+  assert.equal(result.code, 0, result.err);
+  assert.match(result.out, /^OmniRoute · Unsigned results · 1\.00% integrator fee\n/);
+  const footer = result.out.split('\n=== Route Summary ===\n')[1];
+  assert.match(footer, /appFeeUsd: 0\.03 \(1\.00%\)/);
+  assert.doesNotMatch(result.out, /0\.30%/);
+});
+test('human CLI renders object symbols as Unavailable in a single stdout write', async () => {
+  const relay = mockRelay(), writes = [];
+  let err = '';
+  const code = await runCli(['quote', '--from', 'base', '--to', 'arbitrum', '--token', 'USDC', '--amount', '10'], {
+    fetchImpl: async (...args) => {
+      const data = await (await relay.fetchImpl(...args)).json();
+      data.details.currencyOut.currency.symbol = { toString: 'OUT' };
+      return new Response(JSON.stringify(data));
+    },
+    stdout: { write: s => writes.push(s) },
+    stderr: { write: s => { err += s; } },
+  });
+  assert.equal(code, 0, err);
+  assert.equal(err, '');
+  assert.equal(writes.length, 1);
+  const footer = writes[0].split('\n=== Route Summary ===\n')[1];
+  assert.match(footer, /Output: 9\.9 Unavailable \| Min output: 9\.8 Unavailable/);
+});
+for (const flags of [[], ['--json']]) test(`CLI output escapes terminal controls (${flags.length ? 'JSON' : 'human'})`, async () => {
+  const relay = mockRelay();
+  const malicious = '\x1b[2J\x1b[HFORGED\nLINE' + Array.from({ length: 160 }, (_, i) => String.fromCharCode(i)).filter(c => /[\x00-\x1f\x7f-\x9f]/.test(c)).join('') + '\u2028\u2029\u202e' + String.fromCodePoint(0x1BCA0, 0xE0001);
+  const result = await cli(['quote', '--from', 'base', '--to', 'arbitrum', '--token', 'USDC', '--amount', '10', ...flags], {
+    fetchImpl: async (...args) => {
+      const data = await (await relay.fetchImpl(...args)).json();
+      data.details.currencyOut.currency.symbol = malicious;
+      data.requestId = malicious;
+      return new Response(JSON.stringify(data));
+    },
+  });
+  assert.equal(result.code, 0, result.err);
+  assert.equal(Buffer.from(result.out).includes(0x1b), false);
+  assert.doesNotMatch(result.out.replace(/\n/g, ''), /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+  const body = result.out.split('\n=== Route Summary ===\n')[0];
+  assert.equal(JSON.parse(body.slice(body.indexOf('{'))).requestId, malicious);
+  if (flags.length) {
+    assert.equal(JSON.parse(result.out).requestId, malicious);
+    assert.equal(JSON.parse(result.out).currencyOut.symbol, malicious);
+    assert.doesNotMatch(result.out, /Route Summary/);
+    return;
+  }
+  const footer = result.out.split('\n=== Route Summary ===\n')[1];
+  assert.equal(footer.split('\n').length, 2);
+  assert.equal(footer.endsWith('\n'), true);
+  assert.ok(footer.includes('Output: 9.9 \\u001b[2J\\u001b[HFORGED\\u000aLINE'));
+  assert.ok(footer.includes('requestId: \\u001b[2J\\u001b[HFORGED\\u000aLINE'));
+  assert.ok(footer.includes('\\ud82f\\udca0\\udb40\\udc01'));
+});
+test('CLI escapes terminal controls in upstream HTTP errors', async () => {
+  const result = await cli(['status', '--id', 'test'], {
+    fetchImpl: async () => new Response(JSON.stringify({ message: '\u001b[2J\u001b[HFORGED\nSUCCESS' }), { status: 400 }),
+  });
+  assert.equal(result.code, 1);
+  assert.equal(result.out, '');
+  assert.equal(result.err, 'Error: Relay HTTP 400: \\u001b[2J\\u001b[HFORGED\\u000aSUCCESS\n');
+  assert.doesNotMatch(result.err.slice(0, -1), /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+});
 const args = [ {}, { fromChain: 'base', toChain: 'polygon', amount: '10', fromToken: 'USDC' }, { fromChain: 'base', amount: '10', fromToken: 'USDC' }, { fromChain: 'base', amount: '10', fromToken: 'USDC' }, { fromChain: 'base', targetChain: 'polygon', amountPerWallet: '2', recipients: [USER] }, { requestId: 'test' } ];
 for (const framed of [false, true]) test(`MCP initialize, notifications and every tool over ${framed ? 'Content-Length' : 'NDJSON'}`, async () => {
   const input = new PassThrough(), output = new PassThrough(); let result = '';

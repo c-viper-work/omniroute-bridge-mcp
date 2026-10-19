@@ -35,6 +35,8 @@ export async function getPolymarketOnboardPlan({ fromChain, fromToken = 'native'
   return plan('polymarket', quotes, ['Gas top-up is an additional source-token spend, valued approximately in USD; output POL is after fees.', 'USDC.e arrives at the specified Polygon wallet. Use the correct Polymarket wallet; account setup, approvals and deposits may still be required.']);
 }
 export async function getHyperliquidOnboardPlan({ fromChain, fromToken = 'native', amount, targetMode = 'hyperevm_hype', recipientAddress, userAddress }, options = {}) {
+  if (targetMode === 'hyperevm-hype') targetMode = 'hyperevm_hype';
+  if (targetMode === 'arbitrum-usdc') targetMode = 'arbitrum_usdc';
   if (!['hyperevm_hype', 'arbitrum_usdc', 'both'].includes(targetMode)) throw new Error('targetMode must be hyperevm_hype, arbitrum_usdc or both');
   const targets = targetMode === 'both' ? ['hyperevm_hype', 'arbitrum_usdc'] : [targetMode];
   const quotes = await Promise.all(targets.map(mode => getBridgeQuote({ fromChain, fromToken, amount, recipientAddress, userAddress, toChain: mode === 'hyperevm_hype' ? 'hyperevm' : 'arbitrum', toToken: mode === 'hyperevm_hype' ? 'HYPE' : 'USDC' }, options)));

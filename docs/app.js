@@ -28,6 +28,33 @@ for (const tab of tabs) {
 }
 $('quote-form').addEventListener('input', () => { invalidate(); presentation(); });
 $('quote-form').addEventListener('change', () => { invalidate(); presentation(); });
+for (const id of ['amt-01', 'amt-1', 'amt-25', 'amt-100', 'amt-500']) {
+  $(id).addEventListener('click', () => {
+    if (executing) return;
+    $('amount').value = $(id).dataset.amount;
+    invalidate(); presentation();
+  });
+}
+for (const preset of ['polymarket', 'hyperliquid', 'solana']) {
+  $('preset-' + preset).addEventListener('click', () => {
+    if (quoting || executing) return;
+    $(preset === 'solana' ? 'tab-bridge' : 'tab-express').click();
+    $('from-chain').value = preset === 'solana' ? 'solana' : 'base';
+    tokens('from');
+    $('from-token').value = preset === 'polymarket' ? 'USDC' : preset === 'hyperliquid' ? 'ETH' : 'SOL';
+    $('amount').value = preset === 'polymarket' ? '100' : preset === 'hyperliquid' ? '0.05' : '1';
+    if (preset === 'solana') {
+      if (account && $('sender').value.trim().toLowerCase() === account.toLowerCase()) $('sender').value = '';
+      $('to-chain').value = 'base'; tokens('to'); $('to-token').value = 'USDC';
+    } else {
+      if (account && !$('sender').value.trim()) $('sender').value = account;
+      $('express-mode').value = preset === 'polymarket' ? 'polymarket' : 'hyperevm_hype';
+      if (preset === 'polymarket') { $('include-gas').checked = true; $('gas-usd').value = '2'; }
+    }
+    invalidate(); presentation();
+    $('quote-form').requestSubmit();
+  });
+}
 function args() {
   const common = { fromChain: $('from-chain').value, fromToken: $('from-token').value, amount: $('amount').value.trim(), userAddress: $('sender').value.trim() || undefined, recipientAddress: $('recipient').value.trim() || undefined };
   if (mode === 'quote') return ['quote', { ...common, toChain: $('to-chain').value, toToken: $('to-token').value }];
@@ -35,7 +62,7 @@ function args() {
   return $('express-mode').value === 'polymarket' ? ['polymarket', { ...common, includeGasTopup: $('include-gas').checked, gasTopupAmountUsd: $('gas-usd').value.trim() }] : ['hyperliquid', { ...common, targetMode: $('express-mode').value }];
 }
 const text = (tag, value, parent) => { const el = document.createElement(tag); el.textContent = value; parent.append(el); return el; };
-const available = value => value === null || value === undefined ? 'Unavailable' : String(value);
+const available = value => typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean' ? String(value) : 'Unavailable';
 function render() {
   const root = $('results'); root.replaceChildren();
   text('p', plan.previewOnly ? 'PREVIEW ONLY · connect and requote before execution' : 'Unsigned plan · review every route below', root).className = 'notice note';
