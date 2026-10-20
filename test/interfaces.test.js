@@ -312,7 +312,7 @@ test('CLI inline flags support aliases, equals in values, and canonical duplicat
   for (const flag of ['--json=true', '--no-gas=false']) assert.match((await cli(['polymarket', flag])).err, /Unknown option/);
   assert.match((await cli(['quote', '--source-chain='])).err, /Missing value for --from/);
 });
-test('CLI required options fail explicitly before network and version is 1.2.0', async () => {
+test('CLI required options fail explicitly before network and version is 1.3.0', async () => {
   const required = { quote: ['from', 'to', 'amount'], polymarket: ['from', 'amount'], hyperliquid: ['from', 'amount'], refuel: ['from', 'to', 'amount-per-wallet', 'recipients'], status: ['request-id'] };
   for (const [command, flags] of Object.entries(required)) for (const missing of flags) {
     const m = mockRelay();
@@ -320,9 +320,9 @@ test('CLI required options fail explicitly before network and version is 1.2.0',
     assert.equal(r.err, `Error: Missing required option: --${missing}\n`);
     assert.equal(m.calls.length, 0);
   }
-  assert.equal((await cli(['--version'])).out, '1.2.0\n');
-  assert.match((await cli(['--help'])).out, /1\.2\.0/);
-  assert.equal((await handleRpc({ jsonrpc: '2.0', id: 1, method: 'initialize' })).result.serverInfo.version, '1.2.0');
+  assert.equal((await cli(['--version'])).out, '1.3.0\n');
+  assert.match((await cli(['--help'])).out, /1\.3\.0/);
+  assert.equal((await handleRpc({ jsonrpc: '2.0', id: 1, method: 'initialize' })).result.serverInfo.version, '1.3.0');
 });
 test('NDJSON bare-LF colon line returns parse error without waiting for EOF or headers', async () => {
   const input = new PassThrough(), output = new PassThrough();

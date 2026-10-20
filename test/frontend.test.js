@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile, access, readdir } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { getBridgeQuote, getPolymarketOnboardPlan, getHyperliquidOnboardPlan, planMultiWalletGasRefuel } from '../docs/lib/service.js';
-import { WalletExecutor, preflight, cliCommand, shellQuote } from '../docs/lib/wallet.js';
+import { WalletExecutor, preflight, cliCommand, shellQuote, webUrl } from '../docs/lib/wallet.js';
 import { USER, mockRelay } from './helpers.js';
 import { DEFAULT_EVM_USER, DEFAULT_SOLANA_USER } from '../docs/lib/constants.js';
 const html = await readFile(new URL('../docs/index.html', import.meta.url), 'utf8');
@@ -199,7 +199,7 @@ test('connected EVM wallet survives Solana and EVM preset round trips', async ()
   assert.equal(els.get('execute').disabled, false);
   assert.deepEqual(wallet.calls.map(c => c.method), ['eth_requestAccounts']);
 });
-async function ui() {
+async function ui(search = '', hash = '') {
   class Element {
     constructor(id='') {this.id=id;this.children=[];this.listeners={};this.value='';this.disabled=false;this.dataset={};this.attributes={};}
     addEventListener(name,fn){(this.listeners[name]??=[]).push(fn);}
@@ -231,7 +231,7 @@ async function ui() {
     return new Response(JSON.stringify(data));
   };
   const bridgeArgsToken = (await import('../docs/lib/constants.js')).CHAINS.base.tokens.USDC.address;
-  const constants=await import('../docs/lib/constants.js');const context={...constants,WalletExecutor,preflight,cliCommand,document:{getElementById:id=>els.get(id),querySelectorAll:()=>tabs,createElement:()=>new Element()},window:{ethereum:wallet},navigator:{clipboard:{writeText:async s=>{context.copied=s;}}},setInterval(fn){context.tick=fn;},getBridgeQuote:a=>getBridgeQuote(a,relay),getPolymarketOnboardPlan:a=>getPolymarketOnboardPlan(a,relay),getHyperliquidOnboardPlan:a=>getHyperliquidOnboardPlan(a,relay),planMultiWalletGasRefuel:a=>planMultiWalletGasRefuel(a,relay),statusRequests:[],checkBridgeOrderStatus:async args=>{context.statusRequests.push(args.requestId);return {status:'success'};}};
+  const constants=await import('../docs/lib/constants.js');const context={...constants,URLSearchParams,location:{search,hash},WalletExecutor,preflight,cliCommand,webUrl,document:{getElementById:id=>els.get(id),querySelectorAll:()=>tabs,createElement:()=>new Element()},window:{ethereum:wallet},navigator:{clipboard:{writeText:async s=>{context.copied=s;}}},setInterval(fn){context.tick=fn;},getBridgeQuote:a=>getBridgeQuote(a,relay),getPolymarketOnboardPlan:a=>getPolymarketOnboardPlan(a,relay),getHyperliquidOnboardPlan:a=>getHyperliquidOnboardPlan(a,relay),planMultiWalletGasRefuel:a=>planMultiWalletGasRefuel(a,relay),statusRequests:[],checkBridgeOrderStatus:async args=>{context.statusRequests.push(args.requestId);return {status:'success'};}};
   runInNewContext(app.replace(/^import .*;\n/gm,''),context);return {els,tabs,relay,wallet,events,context};
 }
 test('browser connect, requote, export, execution, wallet invalidation and keyboard tabs',async()=>{
@@ -510,4 +510,226 @@ test('input-token calls reject allowance increases, transferFrom and unbounded t
   item.data.to = USER;
   item.data.data = encode('0x39509351', 1n);
   assert.throws(() => preflight(base, USER), /Invalid transaction calldata or sender/);
+});
+
+test('bridge deep link resolves aliases, prefills inputs and fetches a fresh unsigned quote on load', async () => {
+  const { els, relay, wallet, context } = await ui('?' + new URLSearchParams({ mode: 'quote', from: '8453', to: 'arb', token: 'USDC', toToken: 'ETH', amount: '12.5', sender: USER, recipient: USER, slippageBps: '50', calldata: '0xdeadbeef' }));
+  await els.get('quote-form').submission;
+  assert.equal(els.get('from-chain').value, 'base');
+  assert.equal(els.get('to-chain').value, 'arbitrum');
+  assert.equal(els.get('from-token').value, 'USDC');
+  assert.equal(els.get('to-token').value, 'ETH');
+  assert.equal(els.get('amount').value, '12.5');
+  assert.equal(els.get('sender').value, USER);
+  assert.equal(els.get('recipient').value, USER);
+  assert.equal(relay.calls.length, 1);
+  assert.equal(relay.calls[0].payload.amount, '12500000');
+  assert.equal(relay.calls[0].payload.slippageTolerance, '50');
+  assert.equal(wallet.calls.length, 0);
+  assert.equal(els.get('execute').disabled, true);
+  assert.equal(els.get('copy-link').disabled, false);
+  await els.get('copy-link').click();
+  const copied = context.copied;
+  assert.equal(new URL(copied).searchParams.get('slippageBps'), '50');
+  assert.equal(new URL(copied).searchParams.has('calldata'), false);
+  await els.get('copy-cli').click();
+  assert.match(context.copied, /--slippage-bps '50'/);
+  await els.get('copy-link').click();
+  assert.equal(els.get('status').textContent, 'Copied shareable route link. Opening it fetches a fresh quote.');
+  const walk = el => [el, ...el.children.flatMap(walk)];
+  assert.ok(walk(els.get('results')).some(el => el.textContent === 'Shareable executeUrl'));
+  assert.ok(walk(els.get('results')).some(el => el.textContent === copied));
+  const reopened = await ui(new URL(copied).search);
+  await reopened.els.get('quote-form').submission;
+  assert.equal(reopened.relay.calls.length, 1);
+  await els.get('quote-form').fire('input');
+  assert.equal(els.get('copy-link').disabled, true);
+  await els.get('copy-link').click();
+  assert.equal(context.copied, copied);
+});
+
+test('express and refuel deep links auto-submit their complete plans and copy the plan link', async () => {
+  for (const [mode, extra, destinations] of [
+    ['express', { expressMode: 'polymarket', includeGas: '1', gasUsd: '3' }, [137, 137]],
+    ['polymarket', { includeGas: '0' }, [137]],
+    ['polymarket', { includeGas: 'false' }, [137]],
+    ['hyperliquid', {}, [999]],
+    ['express', { expressMode: 'both' }, [999, 42161]],
+    ['refuel', { to: 'polygon', recipients: `${USER},${USER}` }, [137, 137]]
+  ]) {
+    const { els, relay, wallet, context } = await ui('?' + new URLSearchParams({ mode, from: 'base', token: 'USDC', amount: '10', sender: USER, recipient: USER, ...extra }));
+    await els.get('quote-form').submission;
+    assert.deepEqual(relay.calls.map(c => c.payload.destinationChainId), destinations);
+    assert.equal(wallet.calls.length, 0);
+    assert.equal(els.get('copy-link').disabled, false);
+    await els.get('copy-json').click();
+    const plan = JSON.parse(context.copied);
+    await els.get('copy-link').click();
+    assert.equal(context.copied, plan.executeUrl);
+    assert.equal(new URL(context.copied).searchParams.get('mode'), mode === 'refuel' ? 'refuel' : 'express');
+    if (mode === 'refuel') assert.equal(els.get('recipients').value, `${USER}\n${USER}`);
+    if (extra.gasUsd) { assert.equal(els.get('gas-usd').value, '3'); assert.equal(relay.calls[1].payload.amount, '3000000'); }
+    if (['0', 'false'].includes(extra.includeGas)) assert.equal(els.get('include-gas').checked, false);
+  }
+});
+
+test('incomplete or unsupported deep links do not auto-quote a substituted route', async () => {
+  for (const query of ['', '?amount=10', '?from=base&amount=10', '?mode=quote', '?mode=refuel&amount=1', '?mode=quote&amount=1&from=unknown', '?mode=quote&amount=1&token=0xdeadbeef', '?mode=quote&amount=1&slippageBps=oops', '?mode=__proto__&amount=1', '?mode=unknown&amount=1', '?mode=express&amount=1&expressMode=unknown']) {
+    const { els, relay, wallet } = await ui(query);
+    assert.equal(els.get('quote-form').submission, undefined);
+    assert.equal(relay.calls.length, 0);
+    assert.equal(wallet.calls.length, 0);
+  }
+});
+
+test('chain changes preserve the connected account and label; account changes update sender without reconnecting', async () => {
+  const { els, events, wallet, context } = await ui();
+  els.get('amount').value = '1';
+  await els.get('connect').click();
+  await els.get('quote-form').fire('submit');
+  const label = els.get('connect').textContent;
+  events.chainChanged('0xa4b1');
+  assert.equal(els.get('connect').textContent, label);
+  assert.equal(els.get('sender').value, USER);
+  assert.equal(els.get('execute').disabled, true);
+  assert.equal(els.get('copy-link').disabled, true);
+  assert.equal(els.get('status').textContent, 'Wallet network changed. Request a fresh quote.');
+  await els.get('quote-form').fire('submit');
+  assert.equal(els.get('execute').disabled, false); // preflight requires retained account.
+  const next = '0x2222222222222222222222222222222222222222';
+  events.accountsChanged([next]);
+  assert.equal(els.get('sender').value, next);
+  assert.equal(els.get('connect').textContent, next.slice(0,6) + '…' + next.slice(-4));
+  assert.equal(els.get('execute').disabled, true);
+  assert.equal(els.get('status').textContent, 'Wallet account changed. Request a fresh quote with this sender.');
+  await els.get('quote-form').fire('submit');
+  assert.equal(els.get('execute').disabled, false);
+  await els.get('copy-json').click();
+  assert.equal(JSON.parse(context.copied).quotes[0].payload.user, next);
+  assert.equal(wallet.calls.filter(c => c.method === 'eth_requestAccounts').length, 1);
+  for (const disconnect of [() => events.accountsChanged([]), () => events.disconnect()]) {
+    disconnect();
+    assert.equal(els.get('connect').textContent, 'Connect wallet');
+    const sender = els.get('sender').value;
+    events.accountsChanged([next]);
+    assert.equal(els.get('sender').value, sender);
+    assert.equal(els.get('connect').textContent, 'Connect wallet');
+    assert.equal(els.get('execute').disabled, true);
+    await els.get('quote-form').fire('submit');
+    assert.equal(els.get('execute').disabled, true);
+    await els.get('connect').click();
+  }
+});
+
+test('webUrl maps current form arguments to shareable route intent', () => {
+  const url = new URL(webUrl('refuel', { fromChain: 'base', fromToken: 'USDC', targetChain: 'polygon', amountPerWallet: '1', recipients: [USER, USER], senderAddress: USER, data: '0xdeadbeef' }));
+  assert.deepEqual(Object.fromEntries(url.searchParams), { mode: 'refuel', from: 'base', to: 'polygon', token: 'USDC', amount: '1', sender: USER, recipients: `${USER},${USER}` });
+  const poly = new URL(webUrl('polymarket', { ...bridgeArgs, includeGasTopup: false, gasTopupAmountUsd: '2' }));
+  assert.equal(poly.searchParams.get('expressMode'), 'polymarket');
+  assert.equal(poly.searchParams.get('includeGas'), '0');
+  assert.equal(poly.searchParams.has('gasUsd'), false);
+});
+
+const routeQuery = extra => '?' + new URLSearchParams({ mode: 'quote', from: 'base', to: 'arbitrum', token: 'USDC', amount: '10', ...extra });
+const routeCards = els => els.get('results').children.filter(el => el.className === 'card');
+const reviewRows = card => {
+  const rows = card.children.find(el => el.children.some(child => child.textContent === 'Source amount')).children;
+  return Object.fromEntries(rows.filter((_, i) => i % 2 === 0).map((el, i) => [el.textContent, rows[i * 2 + 1].textContent]));
+};
+test('deep-link slippage is visible and every manual form control clears it', async () => {
+  for (const action of ['input', 'change', 'tab-express', 'tab-refuel', 'amt-01', 'amt-1', 'amt-25', 'amt-100', 'amt-500', 'preset-polymarket', 'preset-hyperliquid', 'preset-solana']) {
+    const { els, relay } = await ui(routeQuery({ slippageBps: '50' }));
+    await els.get('quote-form').submission;
+    assert.equal(relay.calls[0].payload.slippageTolerance, '50');
+    assert.equal(reviewRows(routeCards(els)[0])['Slippage tolerance'], '50 bps (0.50%)');
+    if (['input', 'change'].includes(action)) {
+      els.get('amount').value = '2';
+      await els.get('quote-form').fire(action);
+    } else {
+      await els.get(action).click();
+      await els.get('quote-form').submission;
+      if (action.startsWith('tab-') || action.startsWith('preset-')) {
+        await els.get('tab-bridge').click();
+      }
+    }
+    await els.get('quote-form').fire('submit');
+    assert.ok(relay.calls.slice(1).every(c => !('slippageTolerance' in c.payload)), action);
+    for (const card of routeCards(els)) assert.equal(reviewRows(card)['Slippage tolerance'], 'Auto (Relay default)', action);
+  }
+});
+test('invalid deep-link slippage blocks auto-submit and never leaks into manual quotes', async () => {
+  for (const slippageBps of ['501', '10000', 'oops']) {
+    const { els, relay } = await ui(routeQuery({ slippageBps }));
+    assert.equal(els.get('quote-form').submission, undefined);
+    assert.equal(relay.calls.length, 0);
+    assert.match(els.get('status').textContent, /unsupported/);
+    await els.get('quote-form').fire('submit');
+    assert.equal(relay.calls.length, 1);
+    assert.equal('slippageTolerance' in relay.calls[0].payload, false);
+    assert.equal(reviewRows(routeCards(els)[0])['Slippage tolerance'], 'Auto (Relay default)');
+  }
+  const { els, relay } = await ui(routeQuery({ slippageBps: '500' }));
+  await els.get('quote-form').submission;
+  assert.equal(relay.calls[0].payload.slippageTolerance, '500');
+});
+test('custom link recipients require manual review and each affected route shows a warning', async () => {
+  const other = '0x000000000000000000000000000000000000dEaD';
+  for (const extra of [{ sender: USER, recipient: other }, { recipient: other }, { mode: 'refuel', sender: USER, recipients: `${USER},${other}` }, { mode: 'refuel', recipients: other }]) {
+    const { els, relay, wallet } = await ui(routeQuery(extra));
+    assert.equal(els.get('sender').value, extra.sender ?? '');
+    assert.equal(els.get('recipient').value, extra.recipient ?? '');
+    assert.equal(els.get('recipients').value, extra.recipients?.replaceAll(',', '\n') ?? '');
+    assert.equal(els.get('amount').value, '10');
+    assert.equal(els.get('quote-form').submission, undefined);
+    assert.equal(relay.calls.length, 0);
+    assert.match(els.get('status').textContent, /Custom recipient detected in link/);
+    await els.get('quote-form').fire('submit');
+    const cards = routeCards(els);
+    assert.equal(cards.length, extra.recipients?.split(',').length ?? 1);
+    cards.forEach((card, i) => {
+      const warning = relay.calls[i].payload.recipient.toLowerCase() !== relay.calls[i].payload.user.toLowerCase();
+      assert.equal(reviewRows(card)['Recipient warning'], warning ? 'Differs from sender / connected wallet — verify before signing' : undefined);
+      assert.equal(card.children.some(el => el.className === 'notice note' && el.textContent === 'Warning: Recipient differs from sender or connected wallet. Verify the recipient address before signing.'), warning);
+    });
+    assert.equal(wallet.calls.length, 0);
+  }
+});
+test('recipient review also checks the connected wallet and compares addresses case insensitively for EVM and case sensitively for Solana', async () => {
+  const other = '0x000000000000000000000000000000000000dEaD';
+  const { els } = await ui(routeQuery({ sender: other, recipient: other.toLowerCase() }));
+  await els.get('quote-form').submission;
+  assert.equal(reviewRows(routeCards(els)[0])['Recipient warning'], undefined);
+  await els.get('connect').click();
+  els.get('sender').value = other;
+  await els.get('quote-form').fire('input');
+  await els.get('quote-form').fire('submit');
+  assert.match(reviewRows(routeCards(els)[0])['Recipient warning'], /connected wallet/);
+  const solA = 'FJCcoqJHmoJyuthUY773gnxBsAY8yQuAgfYwL3zETVVW';
+  const solB = 'fJCcoqJHmoJyuthUY773gnxBsAY8yQuAgfYwL3zETVVW';
+  const sol = await ui('?' + new URLSearchParams({ mode: 'quote', from: 'solana', to: 'solana', token: 'SOL', toToken: 'USDC', amount: '1', sender: solA, recipient: solB }));
+  assert.equal(sol.els.get('quote-form').submission, undefined);
+  assert.match(sol.els.get('status').textContent, /Custom recipient detected in link/);
+});
+test('fragment deep links load routes, search takes precedence, and explicit chain pairs auto-quote', async () => {
+  for (const prefix of ['#', '#?']) {
+    const { els, relay } = await ui('', prefix + routeQuery({ slippageBps: '50' }).slice(1));
+    await els.get('quote-form').submission;
+    assert.equal(relay.calls.length, 1);
+    assert.equal(relay.calls[0].payload.slippageTolerance, '50');
+    assert.equal(els.get('to-chain').value, 'arbitrum');
+  }
+  const blocked = await ui('?amount=10', '#mode=quote&amount=10');
+  assert.equal(blocked.relay.calls.length, 0);
+  const explicit = await ui('?from=base&to=arbitrum&amount=10');
+  await explicit.els.get('quote-form').submission;
+  assert.equal(explicit.relay.calls.length, 1);
+});
+test('submit uses webUrl when the quote has no executeUrl', async () => {
+  const { els, context } = await ui();
+  const quote = context.getBridgeQuote;
+  context.getBridgeQuote = async input => { const result = await quote(input); delete result.executeUrl; return result; };
+  els.get('amount').value = '2';
+  await els.get('quote-form').fire('submit');
+  await els.get('copy-link').click();
+  assert.equal(new URL(context.copied).searchParams.get('amount'), '2');
 });

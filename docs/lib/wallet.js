@@ -1,8 +1,22 @@
+import { buildExecuteUrl } from './service.js';
 import { isValidEvmAddress, resolveChain } from './constants.js';
+export function webUrl(mode, args = {}) {
+  return buildExecuteUrl({
+    mode: ['polymarket', 'hyperliquid'].includes(mode) ? 'express' : mode,
+    expressMode: mode === 'polymarket' ? 'polymarket' : mode === 'hyperliquid' ? args.targetMode ?? 'hyperevm_hype' : args.targetMode,
+    from: args.fromChain, to: args.toChain ?? args.targetChain,
+    token: args.fromToken, toToken: args.toToken,
+    amount: args.amount ?? args.amountPerWallet,
+    sender: args.userAddress ?? args.senderAddress, recipient: args.recipientAddress,
+    recipients: args.recipients, slippageBps: args.slippageBps,
+    includeGas: args.includeGasTopup === undefined ? undefined : args.includeGasTopup ? '1' : '0',
+    gasUsd: args.includeGasTopup === false ? undefined : args.gasTopupAmountUsd
+  });
+}
 export const MAX_AGE_MS = 60000;
 export const shellQuote = value => "'" + String(value).replaceAll("'", "'\\''") + "'";
 export function cliCommand(mode, args) {
-  const flags = { fromChain: 'from', fromToken: 'token', toChain: 'to', toToken: 'to-token', amount: 'amount', userAddress: 'sender', senderAddress: 'sender', recipientAddress: 'recipient', targetMode: 'mode', gasTopupAmountUsd: 'gas-usd', targetChain: 'to', amountPerWallet: 'amount-per-wallet', recipients: 'recipients' };
+  const flags = { fromChain: 'from', fromToken: 'token', toChain: 'to', toToken: 'to-token', amount: 'amount', userAddress: 'sender', senderAddress: 'sender', recipientAddress: 'recipient', targetMode: 'mode', gasTopupAmountUsd: 'gas-usd', targetChain: 'to', amountPerWallet: 'amount-per-wallet', recipients: 'recipients', slippageBps: 'slippage-bps' };
   const parts = ['omniroute-bridge', mode];
   for (const [key, value] of Object.entries(args)) {
     if (value === undefined || value === '') continue;

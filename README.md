@@ -24,11 +24,11 @@ npm test
 npm start
 ```
 
-After the maintainer publishes version 1.0.0 to npm, the equivalent commands are:
+Run directly from GitHub with one command, without cloning or waiting for an npm publication:
 
 ```sh
-npx -y --package omniroute-bridge-mcp omniroute-bridge chains
-npx -y --package omniroute-bridge-mcp omniroute-bridge-mcp mcp
+npx -y github:c-viper-work/omniroute-bridge-mcp chains --json
+npx -y github:c-viper-work/omniroute-bridge-mcp mcp
 ```
 
 Publication and GitHub Pages deployment are separate maintainer actions; this repository does not automatically publish itself.
@@ -48,7 +48,7 @@ Use the following `mcpServers` entry in Claude Desktop's MCP configuration, Curs
 }
 ```
 
-After npm publication, use `"command": "npx"` and `"args": ["-y", "--package", "omniroute-bridge-mcp", "omniroute-bridge-mcp", "mcp"]` instead.
+For zero-clone MCP execution, use `"command": "npx"` and `"args": ["-y", "github:c-viper-work/omniroute-bridge-mcp", "mcp"]` instead. The local `node bin/omniroute.js mcp` option remains available.
 
 Try asking: “Quote 10 USDC from Base to native POL on Polygon,” or “Plan gas funding for these three wallets.” All six tools are read-only: they return unsigned plans and never hold keys, sign, broadcast, or trade.
 
@@ -126,6 +126,8 @@ Use **decimal strings** for exact amounts. `parseUnits` returns BigInt, rejects 
 
 ### Quote result
 
+Every quote and onboarding/refuel plan includes an `executeUrl`: a clickable Web Terminal link containing only route intent, never calldata. MCP agents should always show this link. Opening it fetches a fresh quote; preview quotes must never be executed.
+
 Results include `requestId`, chain metadata, input/output amounts and USD values, minimum output, rate, impact, estimated seconds, gas/relayer/app fees, `payload`, `quotedAt`, `previewOnly` and ordered `steps`. Missing upstream estimates are `null`, never invented. Relay step data and check endpoints are preserved, including non-EVM data. A signature or Solana transaction cannot be passed to EVM `eth_sendTransaction`.
 
 ## MCP tools
@@ -198,6 +200,8 @@ Before a public release, independently verify supported live routes and browser-
 [MIT](LICENSE) · maintained by [c-viper-work](https://github.com/c-viper-work).
 
 ### Static web app
+
+Open an `executeUrl` to prefill the route and automatically request a fresh live quote when an amount (and refuel recipients) is present. **Copy route link** shares the current reviewed route; the link also appears in the unsigned JSON / CLI details. Links can contain wallet addresses. Unsupported chains or custom tokens require manual review rather than automatically quoting a different token. Wallet network changes preserve the connection; account changes update the sender. Both invalidate stale quotes. Signing still requires explicit wallet confirmation.
 
 Serve `docs/` over HTTPS (GitHub Pages) or a local HTTP server, for example
 `python3 -m http.server 8080 --directory docs`. Open `http://localhost:8080`.

@@ -202,3 +202,39 @@ test('same-chain Solana mint comparison preserves case', async () => {
   const q = await getBridgeQuote({ ...args, toToken: differentMint, toTokenDecimals: 6 }, m);
   assert.equal(q.payload.destinationCurrency, differentMint);
 });
+
+test('executeUrl helper serializes only non-empty route intent and excludes transaction data', async () => {
+  const { buildExecuteUrl, WEB_TERMINAL_URL } = await import('../src/index.js');
+  const url = new URL(buildExecuteUrl({ mode: 'quote', amount: 0, includeGas: false, recipients: [USER, USER], sender: '', recipient: null, from: undefined, to: {}, token: NaN, data: '0xdeadbeef', calldata: '0xabcdef', steps: [{ data: '0xabcdef' }], payload: { amount: '1' } }));
+  assert.equal(url.origin + url.pathname, WEB_TERMINAL_URL);
+  assert.deepEqual(Object.fromEntries(url.searchParams), { mode: 'quote', amount: '0', recipients: `${USER},${USER}`, includeGas: 'false' });
+  assert.equal(buildExecuteUrl(), WEB_TERMINAL_URL + '?');
+});
+
+test('all quote and plan executeUrls preserve exact route intent without unsigned calldata', async () => {
+  const check = (result, expected) => {
+    const url = new URL(result.executeUrl);
+    assert.equal(url.origin + url.pathname, 'https://c-viper-work.github.io/omniroute-bridge-mcp/');
+    assert.deepEqual(Object.fromEntries(url.searchParams), expected);
+    for (const quote of result.quotes ?? [result]) {
+      assert.ok(quote.executeUrl);
+      for (const step of quote.steps) for (const item of step.items ?? []) {
+        if (item.data?.data) assert.equal(result.executeUrl.includes(item.data.data), false);
+      }
+      assert.equal(url.searchParams.has('payload'), false);
+      assert.equal(url.searchParams.has('steps'), false);
+      assert.equal(url.searchParams.has('data'), false);
+      assert.equal(url.searchParams.has('calldata'), false);
+    }
+  };
+  check(await getBridgeQuote({ ...input, fromChain: '8453', toChain: 'arb', toToken: 'ETH', slippageBps: 0 }, mockRelay()), { mode: 'quote', from: 'base', to: 'arbitrum', token: 'USDC', toToken: 'ETH', amount: '10', sender: USER, recipient: USER, slippageBps: '0' });
+  check(await getBridgeQuote({ ...input, userAddress: undefined, recipientAddress: undefined, fromToken: USER, fromTokenDecimals: 8, toChain: 'polygon', toToken: USER, toTokenDecimals: 8 }, mockRelay()), { mode: 'quote', from: 'base', to: 'polygon', token: USER, toToken: USER, amount: '10' });
+  for (const includeGasTopup of [true, false]) {
+    check(await getPolymarketOnboardPlan({ ...input, includeGasTopup }, mockRelay()), { mode: 'express', expressMode: 'polymarket', from: 'base', token: 'USDC', amount: '10', sender: USER, recipient: USER, includeGas: includeGasTopup ? '1' : '0', ...(includeGasTopup ? { gasUsd: '2' } : {}) });
+  }
+  for (const targetMode of ['hyperevm_hype', 'arbitrum_usdc', 'both']) {
+    check(await getHyperliquidOnboardPlan({ ...input, targetMode }, mockRelay()), { mode: 'express', expressMode: targetMode, from: 'base', token: 'USDC', amount: '10', sender: USER, recipient: USER });
+  }
+  check(await planMultiWalletGasRefuel({ fromChain: 'base', fromToken: 'USDC', targetChain: 'polygon', amountPerWallet: '0.01', recipients: [USER, USER], senderAddress: USER }, mockRelay()), { mode: 'refuel', from: 'base', to: 'polygon', token: 'USDC', amount: '0.01', sender: USER, recipients: `${USER},${USER}` });
+  for (const tool of TOOLS.slice(1, 5)) assert.match(tool.description, /Always show executeUrl/);
+});

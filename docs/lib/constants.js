@@ -1,3 +1,4 @@
+export const WEB_TERMINAL_URL = 'https://c-viper-work.github.io/omniroute-bridge-mcp/';
 export const RELAY_API_BASE = 'https://api.relay.link';
 export const DEFAULT_FEE_RECIPIENT = '0x8c2279495094C284e1293cdE9DBC52cc4f55C6bd';
 export const DEFAULT_SOLANA_FEE_RECIPIENT = 'FJCcoqJHmoJyuthUY773gnxBsAY8yQuAgfYwL3zETVVW';
