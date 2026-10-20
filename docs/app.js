@@ -108,14 +108,15 @@ $('quote-form').addEventListener('submit', async e => {
   finally { quoting = false; $('quote').disabled = false; }
 });
 $('connect').addEventListener('click', async () => {
-  if (executing) return; $('connect').disabled = true;
+  if (executing) return; clearSlippage(); $('connect').disabled = true;
   try {
     const provider = window.ethereum; if (!provider?.request) throw new Error('No injected EIP-1193 wallet found. Use unsigned export or install a wallet.');
     const accounts = await provider.request({ method: 'eth_requestAccounts' }); if (!accounts[0]) throw new Error('No wallet account selected.'); account = accounts[0];
     if (!executor) {
       executor = new WalletExecutor(provider);
-      const disconnected = () => { account = undefined; $('connect').textContent = 'Connect wallet'; invalidate('Wallet changed. Connect again and request a fresh quote.'); };
+      const disconnected = () => { clearSlippage(); account = undefined; $('connect').textContent = 'Connect wallet'; invalidate('Wallet changed. Connect again and request a fresh quote.'); };
       provider.on?.('accountsChanged', nextAccounts => {
+        clearSlippage();
         if (!nextAccounts?.[0]) { disconnected(); return; }
         if (!account) return;
         account = nextAccounts[0]; $('sender').value = account; $('connect').textContent = account.slice(0,6) + '…' + account.slice(-4);

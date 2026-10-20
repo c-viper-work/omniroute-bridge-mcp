@@ -34,6 +34,20 @@ test('static app structure, accessible tabs, labels, dark mobile layout and depl
 test('deployed shared modules have exact byte parity', async () => {
   for (const name of ['constants', 'relay', 'service']) assert.equal(await readFile(new URL(`../docs/lib/${name}.js`, import.meta.url), 'utf8'), await readFile(new URL(`../src/${name}.js`, import.meta.url), 'utf8'));
 });
+test('social preview metadata points to the standalone 1200×630 PNG and SVG cards', async () => {
+  const url = 'https://c-viper-work.github.io/omniroute-bridge-mcp/og-card.png';
+  assert.ok(html.includes(`<meta property="og:image" content="${url}">`));
+  assert.ok(html.includes(`<meta name="twitter:image" content="${url}">`));
+  assert.ok(html.includes('<meta name="twitter:card" content="summary_large_image">'));
+  const png = await readFile(new URL('../docs/og-card.png', import.meta.url));
+  assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(png.readUInt32BE(16), 1200);
+  assert.equal(png.readUInt32BE(20), 630);
+  const svg = await readFile(new URL('../docs/og-card.svg', import.meta.url), 'utf8');
+  assert.match(svg, /^<svg\b[^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"[^>]*width="1200"[^>]*height="630"[^>]*viewBox="0 0 1200 630"[^>]*>[\s\S]*<\/svg>\s*$/);
+  assert.doesNotMatch(svg, /&(?!amp;|lt;|gt;|quot;|apos;)|<script|<foreignObject|href=/);
+  for (const label of ['OmniRoute', 'Powered by Relay Protocol', 'Polymarket', 'Hyperliquid', '0 npm Dependencies', 'Read-Only MCP', 'Locked CSP', '8 Chains']) assert.ok(svg.includes(label), label);
+});
 test('security: no HTML interpolation, external scripts, stored identities or secrets', async () => {
   const sources = [html, app, ...await Promise.all(['wallet','constants','service','relay'].map(n => readFile(new URL(`../docs/lib/${n}.js`, import.meta.url),'utf8')))];
   for (const source of sources) {
@@ -631,6 +645,31 @@ test('webUrl maps current form arguments to shareable route intent', () => {
 });
 
 const routeQuery = extra => '?' + new URLSearchParams({ mode: 'quote', from: 'base', to: 'arbitrum', token: 'USDC', amount: '10', ...extra });
+test('wallet connection, account switch and disconnect clear link slippage and replace browser history', async () => {
+  for (const action of ['connect', 'switch', 'accounts-disconnect', 'provider-disconnect']) {
+    const { els, relay, events, context } = await ui(routeQuery({ slippageBps: '50' }));
+    await els.get('quote-form').submission;
+    assert.equal(relay.calls[0].payload.slippageTolerance, '50');
+    if (action !== 'connect') {
+      await els.get('connect').click();
+      // Restore a link-derived tolerance to isolate the account event from connection clearing.
+      runInNewContext('slippageBps = 50;', context);
+    }
+    const replacements = [];
+    context.location.pathname = '/omniroute-bridge-mcp/';
+    context.history = { replaceState: (...args) => replacements.push(args) };
+    if (action === 'connect') await els.get('connect').click();
+    else if (action === 'switch') events.accountsChanged(['0x2222222222222222222222222222222222222222']);
+    else if (action === 'accounts-disconnect') events.accountsChanged([]);
+    else events.disconnect();
+    assert.deepEqual(replacements, [[null, '', '/omniroute-bridge-mcp/']], action);
+    assert.equal(runInNewContext('slippageBps', context), undefined, action);
+    await els.get('quote-form').fire('submit');
+    assert.equal('slippageTolerance' in relay.calls.at(-1).payload, false, action);
+    assert.equal(walletSends(context), 0);
+  }
+  function walletSends(context) { return context.window.ethereum.calls.filter(c => c.method === 'eth_sendTransaction').length; }
+});
 const routeCards = els => els.get('results').children.filter(el => el.className === 'card');
 const reviewRows = card => {
   const rows = card.children.find(el => el.children.some(child => child.textContent === 'Source amount')).children;

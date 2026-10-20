@@ -15,7 +15,31 @@ Free to install and use: **no subscription or API-key purchase**. Every Relay qu
 
 ## Quick start
 
-From this source checkout (no installation required):
+Run directly from GitHub without cloning or waiting for an npm publication. No secret or environment variable is needed.
+
+### Claude Desktop, Cursor and Windsurf
+
+Use this entry in your client's MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "omniroute": {
+      "command": "npx",
+      "args": ["-y", "github:c-viper-work/omniroute-bridge-mcp", "mcp"]
+    }
+  }
+}
+```
+
+Or run these one-line CLI commands:
+
+```sh
+npx -y github:c-viper-work/omniroute-bridge-mcp chains --json
+npx -y github:c-viper-work/omniroute-bridge-mcp mcp
+```
+
+From a local source checkout (no installation required):
 
 ```sh
 node bin/omniroute.js chains --json
@@ -24,33 +48,21 @@ npm test
 npm start
 ```
 
-Run directly from GitHub with one command, without cloning or waiting for an npm publication:
+For a local MCP checkout, use `"command": "node"` and `"args": ["/absolute/path/to/omniroute-bridge-mcp/bin/omniroute.js", "mcp"]`.
 
-```sh
-npx -y github:c-viper-work/omniroute-bridge-mcp chains --json
-npx -y github:c-viper-work/omniroute-bridge-mcp mcp
-```
+Try asking: “Quote 10 USDC from Base to native POL on Polygon,” or “Plan gas funding for these three wallets.” All six tools return unsigned plans and never hold keys, sign, broadcast, or trade.
 
 Publication and GitHub Pages deployment are separate maintainer actions; this repository does not automatically publish itself.
 
-### Claude Desktop, Cursor and Windsurf
+## Verify safety in 60 seconds
 
-Use the following `mcpServers` entry in Claude Desktop's MCP configuration, Cursor's MCP settings, or Windsurf's MCP configuration. Replace the project path with your checkout location. No secret or environment variable is needed.
+1. **Zero npm dependencies:** [package.json](package.json) has `"dependencies": {}`, no `devDependencies`, and no install scripts.
+2. **Compact, unminified source:** approximately 850 lines of readable ESM JavaScript across `src/` and `docs/` (excluding byte-identical browser copies of shared modules), with zero build step.
+3. **Read-only MCP & CLI:** all 6 tools never accept, store, or touch private keys or seed phrases; `executeUrl` deep links carry only route intent parameters, never raw transaction calldata. Inspect [src/service.js](src/service.js).
+4. **Strict browser CSP:** [docs/index.html](docs/index.html) locks `connect-src` exclusively to `https://api.relay.link`, with `default-src 'none'` and `script-src 'self'`.
+5. **Bounded wallet preflight:** [docs/lib/wallet.js](docs/lib/wallet.js) verifies before any EVM `eth_sendTransaction` that ERC-20 `approve`/`transfer` calls target only the quoted input token and never exceed the quoted input amount. [docs/app.js](docs/app.js) caps deep-link slippage at <= 500 bps (5.00%) and warns on custom recipients.
 
-```json
-{
-  "mcpServers": {
-    "omniroute": {
-      "command": "node",
-      "args": ["/absolute/path/to/omniroute-bridge-mcp/bin/omniroute.js", "mcp"]
-    }
-  }
-}
-```
-
-For zero-clone MCP execution, use `"command": "npx"` and `"args": ["-y", "github:c-viper-work/omniroute-bridge-mcp", "mcp"]` instead. The local `node bin/omniroute.js mcp` option remains available.
-
-Try asking: “Quote 10 USDC from Base to native POL on Polygon,” or “Plan gas funding for these three wallets.” All six tools are read-only: they return unsigned plans and never hold keys, sign, broadcast, or trade.
+Browser wallet signing in the Web Terminal supports all 7 EVM source chains: **Ethereum, Base, Arbitrum, Optimism, Polygon, BNB Smart Chain, and HyperEVM**, using an injected EIP-1193 wallet. **Solana source routes return unsigned transaction plans for external signing.**
 
 ## CLI
 
@@ -193,7 +205,7 @@ docker run --rm -i omniroute-bridge-mcp
 
 Tests use native `node:test`, `node:assert`, deterministic Relay fixtures, stream fragmentation and CLI subprocesses. They never spend funds. They cover fee injection, EVM/Solana directions, input precision and validation, all service/tool/CLI entry points and protocol framing. Mock tests do not establish live liquidity, settlement performance, browser wallet compatibility or platform crediting.
 
-Before a public release, independently verify supported live routes and browser-wallet behavior, review executable transactions, publish the npm package, and enable GitHub Pages from `docs/`. Do not execute stale quotes or resend a transaction whose submission status is unknown. Nothing in the SDK automatically broadcasts a transaction.
+Always verify recipient addresses and wallet transaction details before signing, never execute stale quotes, and never resend a transaction whose submission status is unknown. Nothing in the SDK, CLI, or MCP server automatically broadcasts a transaction.
 
 ## License
 

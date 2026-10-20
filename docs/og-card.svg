@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">OmniRoute — Instant Cross-Chain Bridge &amp; Onboarding</title>
+  <desc id="desc">Powered by Relay Protocol. Polymarket, Hyperliquid and multi-wallet gas refuel across 8 chains.</desc>
+  <rect width="1200" height="630" fill="#0b1015"/>
+  <rect x="32" y="32" width="1136" height="566" rx="28" fill="#141d25" stroke="#2b3946"/>
+  <path d="M64 154H1136" stroke="#2b3946"/>
+  <g font-family="system-ui, -apple-system, sans-serif">
+    <text x="64" y="108" fill="#baff65" font-size="30" font-weight="700">↗ OmniRoute · Powered by Relay Protocol</text>
+    <text x="64" y="247" fill="#edf5f8" font-size="60" font-weight="800" letter-spacing="-1">Instant Cross-Chain</text>
+    <text x="64" y="322" fill="#edf5f8" font-size="60" font-weight="800" letter-spacing="-1">Bridge &amp; Onboarding</text>
+    <text x="64" y="396" fill="#a5b7c6" font-size="26">One-click Polymarket (USDC.e + POL),</text>
+    <text x="64" y="436" fill="#a5b7c6" font-size="26">Hyperliquid (HYPE / USDC) &amp; Multi-Wallet Gas Refuel</text>
+    <rect x="64" y="494" width="1072" height="60" rx="16" fill="#0b1015" stroke="#baff65"/>
+    <text x="600" y="533" text-anchor="middle" fill="#baff65" font-size="24" font-weight="600">0 npm Dependencies · Read-Only MCP · Locked CSP · 8 Chains</text>
+  </g>
+</svg>

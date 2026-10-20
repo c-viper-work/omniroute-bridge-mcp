@@ -10,7 +10,7 @@ export async function handleRpc(message, options = {}) {
   const error = (code, text) => ({ jsonrpc: '2.0', id: message.id, error: { code, message: text } });
   if (message.params !== undefined && (!message.params || typeof message.params !== 'object' || Array.isArray(message.params))) return error(-32602, 'Invalid params');
   switch (message.method) {
-    case 'initialize': return response({ protocolVersion: versions.includes(message.params?.protocolVersion) ? message.params.protocolVersion : versions[0], capabilities: { tools: { listChanged: false }, resources: { listChanged: false }, prompts: { listChanged: false } }, serverInfo: { name: 'omniroute-bridge-mcp', version: '1.3.0' }, instructions: 'Read-only unsigned quotes. Always show executeUrl to the user for 1-click browser wallet signing. All routes include a 30 bps integrator fee. Never execute a preview quote.' });
+    case 'initialize': return response({ protocolVersion: versions.includes(message.params?.protocolVersion) ? message.params.protocolVersion : versions[0], capabilities: { tools: { listChanged: false }, resources: { listChanged: false }, prompts: { listChanged: false } }, serverInfo: { name: 'omniroute-bridge-mcp', version: '1.3.1' }, instructions: 'Read-only unsigned quotes. Always show executeUrl to the user for 1-click browser wallet signing. All routes include a 30 bps integrator fee. Never execute a preview quote.' });
     case 'ping': return response({});
     case 'tools/list': return response({ tools: TOOLS });
     case 'resources/list': return response({ resources: [] });
