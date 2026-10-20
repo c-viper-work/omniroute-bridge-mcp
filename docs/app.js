@@ -80,10 +80,11 @@ function render() {
   });
   const details = text('details', '', root); text('summary', 'Unsigned JSON / CLI (manual copy fallback)', details); text('pre', JSON.stringify(plan, null, 2), details); text('pre', command, details);
 }
-function refreshExecution() {
+function refreshExecution(timer = false) {
   if (!plan || executing) { $('execute').disabled = true; return; }
+  const wasEnabled = !$('execute').disabled;
   try { if (!executor) throw new Error('Connect wallet and request a fresh quote to execute.'); preflight(plan, account); $('execute').disabled = false; }
-  catch (e) { $('execute').disabled = true; show(e.message); }
+  catch (e) { $('execute').disabled = true; if (!timer || wasEnabled) show(e.message); }
 }
 $('quote-form').addEventListener('submit', async e => {
   e.preventDefault(); if (quoting || executing) return;
@@ -126,5 +127,5 @@ $('check-status').addEventListener('click', async () => {
   try { for (const [i, q] of quotes.entries()) { const result = q.requestId ? await checkBridgeOrderStatus({ requestId: q.requestId }) : { status: 'No Relay request ID available' }; text('p', `Route ${i+1} delivery: ${JSON.stringify(result)}`, $('progress')).className = 'note address'; } }
   catch (e) { show(e.message); } finally { checkingStatus = false; $('check-status').disabled = !submittedQuotes.length && !plan; }
 });
-setInterval(() => { if (plan && !executing && !executor?.attempted.has(plan)) refreshExecution(); }, 1000);
+setInterval(() => { if (plan && !executing && !executor?.attempted.has(plan)) refreshExecution(true); }, 1000);
 presentation();

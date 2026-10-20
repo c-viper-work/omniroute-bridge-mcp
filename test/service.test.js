@@ -104,3 +104,101 @@ test('Polymarket rejects missing or invalid USD valuation before quoting gas', a
     assert.equal(m.calls.length, 1);
   }
 });
+
+test('same-chain identical tokens reject before HTTP, different tokens still quote', async () => {
+  const m = mockRelay();
+  for (const toToken of ['USDC', '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913']) await assert.rejects(getBridgeQuote({ ...input, toChain: 'base', toToken }, m), /Source and destination token cannot be identical/);
+  assert.equal(m.calls.length, 0);
+  await getBridgeQuote({ ...input, toChain: 'base', toToken: 'ETH' }, m);
+  assert.equal(m.calls.length, 1);
+});
+test('Polymarket validates enabled gas only, caps at 50 and skips Polygon native POL', async () => {
+  for (const gasTopupAmountUsd of ['', -1, '1e1', 50.01, '50.00000000000000000001', Infinity, null, true, false]) {
+    const m = mockRelay();
+    await assert.rejects(getPolymarketOnboardPlan({ ...input, gasTopupAmountUsd }, m), /non-negative decimal up to 50/);
+    assert.equal(m.calls.length, 0);
+    assert.equal((await getPolymarketOnboardPlan({ ...input, includeGasTopup: false, gasTopupAmountUsd }, m)).quotes.length, 1);
+  }
+  await assert.rejects(getPolymarketOnboardPlan({ ...input, includeGasTopup: 'false', gasTopupAmountUsd: '' }), /includeGasTopup must be a boolean/);
+  assert.equal((await getPolymarketOnboardPlan({ ...input, gasTopupAmountUsd: 50 }, mockRelay())).quotes.length, 2);
+  for (const fromToken of ['POL', 'native', '0x' + '0'.repeat(40)]) {
+    const m = mockRelay();
+    assert.equal((await getPolymarketOnboardPlan({ ...input, fromChain: 'polygon', fromToken }, m)).quotes.length, 1);
+    assert.equal(m.calls.length, 1);
+  }
+});
+test('Polymarket checks output USD and inclusive valuation ratio bounds before gas quote', async () => {
+  for (const [outputUsd, valid] of [[null, false], ['', false], ['bad', false], ['0', false], ['-1', false], ['1e1', false], ['4.99', false], ['20.01', false], ['5', true], ['20', true]]) {
+    const m = mockRelay();
+    const fetchImpl = async (...args) => {
+      const data = await (await m.fetchImpl(...args)).json();
+      data.details.currencyOut.amountUsd = outputUsd;
+      if (valid) data.details.currencyOut.amount = String(Number(outputUsd) * 1e6);
+      return new Response(JSON.stringify(data));
+    };
+    const result = getPolymarketOnboardPlan(input, { fetchImpl });
+    if (valid) assert.equal((await result).quotes.length, 2);
+    else await assert.rejects(result, /failed sanity check against output USD/);
+    assert.equal(m.calls.length, valid ? 2 : 1);
+  }
+});
+test('MCP omits optional nulls, copies arguments and coerces safe positive numeric amounts', async () => {
+  const args = { fromChain: 'base', toChain: 'polygon', amount: 1.25, fromToken: null, toToken: undefined, recipientAddress: null };
+  const q = await callTool('get_cross_chain_bridge_quote', args, mockRelay());
+  assert.equal(q.payload.amount, '1250000000000000000');
+  assert.equal(args.amount, 1.25); assert.equal(args.fromToken, null);
+  const p = await callTool('multi_wallet_gas_refuel', { fromChain: 'base', targetChain: 'polygon', amountPerWallet: 0.5, recipients: [USER] }, mockRelay());
+  assert.equal(p.totalInputAmount, '0.5');
+  for (const amount of [null, 0, -1, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1, 1e-7]) await assert.rejects(callTool('get_cross_chain_bridge_quote', { ...args, amount }, mockRelay()), /Invalid type/);
+  for (const key of ['__proto__', 'constructor', 'toString']) await assert.rejects(callTool('list_supported_chains_and_tokens', JSON.parse(`{"${key}":null}`)), /Unknown argument/);
+});
+
+test('MCP rejects null boolean and numeric options but omits optional string nulls', async () => {
+  for (const key of ['includeGasTopup', 'gasTopupAmountUsd']) {
+    const m = mockRelay();
+    await assert.rejects(callTool('polymarket_one_click_onboard', { ...input, [key]: null }, m), /Invalid type/);
+    assert.equal(m.calls.length, 0);
+  }
+  const q = await callTool('get_cross_chain_bridge_quote', { ...input, toChain: 'polygon', recipientAddress: null }, mockRelay());
+  assert.equal(q.payload.recipient, USER);
+});
+test('Polymarket anchors USD to token units and caps additional input independently of USD', async () => {
+  for (const [amountUsd, outputUsd, outRaw, gas, error] of [
+    ['0.0001', '0.0001', '10000000', 2, /failed sanity check/],
+    ['1', '1', '1000000', 2, /failed sanity check/],
+    ['10', '10', '0', 2, /failed sanity check/],
+    ['10', '10', null, 2, /failed sanity check/],
+    ['10', '10', '1.5', 2, /failed sanity check/],
+    ['10', '10', 'bad', 2, /failed sanity check/],
+    ['1', '1', '1000000', 10, null],
+    ['1', '1', '1000000', '10.000000000000000001', /cannot exceed 10x/]
+  ]) {
+    const m = mockRelay();
+    const fetchImpl = async (...args) => {
+      const data = await (await m.fetchImpl(...args)).json();
+      Object.assign(data.details.currencyIn, { amountUsd });
+      Object.assign(data.details.currencyOut, { amountUsd: outputUsd, amount: outRaw });
+      return new Response(JSON.stringify(data));
+    };
+    // Native input isolates the independent cap from the stablecoin input check.
+    const args = gas === 10 || typeof gas === 'string' ? { ...input, fromToken: 'ETH', amount: '0.001' } : input;
+    const result = getPolymarketOnboardPlan({ ...args, gasTopupAmountUsd: gas }, { fetchImpl });
+    if (error) {
+      await assert.rejects(result, error);
+      assert.equal(m.calls.length, 1);
+    } else {
+      const p = await result;
+      assert.equal(BigInt(p.quotes[1].payload.amount), BigInt(p.quotes[0].payload.amount) * 10n);
+    }
+  }
+});
+test('same-chain Solana mint comparison preserves case', async () => {
+  const mint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+  const args = { fromChain: 'solana', toChain: 'solana', fromToken: mint, toToken: mint, amount: '1' };
+  const m = mockRelay();
+  await assert.rejects(getBridgeQuote(args, m), /cannot be identical/);
+  assert.equal(m.calls.length, 0);
+  const differentMint = mint.slice(0, -1) + 'V';
+  const q = await getBridgeQuote({ ...args, toToken: differentMint, toTokenDecimals: 6 }, m);
+  assert.equal(q.payload.destinationCurrency, differentMint);
+});

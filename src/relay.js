@@ -1,7 +1,7 @@
 import { RELAY_API_BASE, DEFAULT_FEE_RECIPIENT, DEFAULT_FEE_BPS, DEFAULT_EVM_USER, DEFAULT_SOLANA_USER, resolveChain, resolveToken, isValidEvmAddress, isValidSolanaAddress, formatUnits } from './constants.js';
 export function validateAddress(address, chain, label = 'Address') {
   const c = resolveChain(chain);
-  if (!(c.vmType === 'evm' ? isValidEvmAddress(address) && !/^0x0{40}$/i.test(address) : isValidSolanaAddress(address))) throw new Error(`${label} must be a valid ${c.vmType === 'evm' ? 'EVM' : 'Solana'} address for ${c.slug}`);
+  if (!(c.vmType === 'evm' ? isValidEvmAddress(address) && !/^0x0{40}$/i.test(address) : isValidSolanaAddress(address) && address !== '11111111111111111111111111111111')) throw new Error(`${label} must be a valid ${c.vmType === 'evm' ? 'EVM' : 'Solana'} address for ${c.slug}`);
   return address;
 }
 export function basisPoints(value, label = 'Basis points') {
@@ -37,7 +37,10 @@ async function request(path, { fetchImpl = globalThis.fetch, timeoutMs = 15000, 
     const response = await fetchImpl(RELAY_API_BASE + path, { method: body ? 'POST' : 'GET', headers: { Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: controller.signal, redirect: 'error' });
     let data;
     try { data = await response.json(); } catch { throw new RelayError(`Relay returned invalid JSON (HTTP ${response.status})`, response.status); }
-    if (!response.ok) throw new RelayError(`Relay HTTP ${response.status}: ${data.message ?? data.error ?? 'Request failed'}`, response.status, data);
+    if (!response.ok) {
+      const errText = typeof data?.message === 'string' && data.message ? data.message : typeof data?.error === 'string' && data.error ? data.error : 'Request failed';
+      throw new RelayError(`Relay HTTP ${response.status}: ${errText}`, response.status, data);
+    }
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new RelayError('Relay returned an invalid response', response.status);
     return data;
   } catch (error) {
@@ -47,7 +50,11 @@ async function request(path, { fetchImpl = globalThis.fetch, timeoutMs = 15000, 
 }
 function currency(value = {}) {
   const c = value.currency ?? {};
-  return { symbol: c.symbol ?? null, amount: value.amount ?? null, amountFormatted: value.amountFormatted ?? (value.amount !== undefined && Number.isInteger(c.decimals) ? formatUnits(value.amount, c.decimals) : null), minimumAmountFormatted: value.minimumAmount !== undefined && Number.isInteger(c.decimals) ? formatUnits(value.minimumAmount, c.decimals) : null, amountUsd: value.amountUsd ?? null };
+  const safeFormat = amount => {
+    try { return amount !== undefined && Number.isInteger(c.decimals) ? formatUnits(amount, c.decimals) : null; }
+    catch { return null; }
+  };
+  return { symbol: c.symbol ?? null, amount: value.amount ?? null, amountFormatted: value.amountFormatted ?? safeFormat(value.amount), minimumAmountFormatted: safeFormat(value.minimumAmount), amountUsd: value.amountUsd ?? null };
 }
 export async function fetchRelayQuote(payload, options = {}) {
   // Rebuild at the HTTP boundary: callers cannot bypass the integrator fee with a hand-written payload.

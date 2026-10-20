@@ -81,15 +81,15 @@ node bin/omniroute.js status --request-id RELAY_REQUEST_ID --json
 node bin/omniroute.js --help
 ```
 
-`--sender` is supported by all quote-producing commands. Without it, returned data is marked `previewOnly`; do not sign preview calldata. For cross-VM routes, also specify the real destination recipient. `--slippage-bps 50` means 0.50% on the `quote` command. `--gas-usd` changes the additional Polymarket gas budget. `--mode both` quotes two full-size Hyperliquid funding routes and doubles the source input budget.
+`--sender` is supported by all quote-producing commands. Without it, returned data is marked `previewOnly`; do not sign preview calldata. For cross-VM routes, also specify the real destination recipient. `--slippage-bps 50` means 0.50% on the `quote` command. `--gas-usd` changes the additional Polymarket gas budget (0–50 USD); `--no-gas` ignores that budget. Value flags also accept `--flag=value`. `--mode both` quotes two full-size Hyperliquid funding routes and doubles the source input budget.
 
 ### Onboarding boundaries
 
-- **Polymarket:** the preset targets Polygon bridged USDC.e (`0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`), distinct from native USDC. Optional gas is a separate POL route. Use the intended platform wallet; a transfer to an arbitrary EOA does not create or fund every kind of Polymarket account automatically. Account setup, approvals and current platform deposit requirements still apply.
+- **Polymarket:** the preset targets Polygon bridged USDC.e (`0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`), distinct from native USDC. Optional gas is a separate POL route, skipped when the source is already native Polygon POL. Use the intended platform wallet; a transfer to an arbitrary EOA does not create or fund every kind of Polymarket account automatically. Account setup, approvals and current platform deposit requirements still apply.
 - **HyperEVM:** native HYPE on chain 999 funds EVM gas. This is not Hyperliquid L1 perpetuals collateral.
 - **Arbitrum USDC:** prepares funds for the official Hyperliquid deposit flow; it does not call Bridge2. Keep Arbitrum ETH for the separate deposit transaction and check the platform's current minimums.
 - **Gas refuel:** `amountPerWallet` is input in the source token. Output native gas is quoted after fees. Up to 20 recipients, four concurrent quote requests, ordered unsigned steps. Duplicate recipients mean repeated allocations. Execution is not atomic; track each submitted transaction separately.
-- **USD gas budget:** estimated using the primary quote's source USD valuation. The gas route is additional spend, not deducted from the primary amount. It is not a guarantee of that many dollars of POL after fees; missing USD pricing causes an explicit error.
+- **USD gas budget:** estimated using the primary quote's source USD valuation. The gas route is additional spend, not deducted from the primary amount. It is not a guarantee of that many dollars of POL after fees; missing or invalid USD pricing causes an explicit error. The primary input/output USD ratio must be between 0.5 and 2.0.
 
 See [Polymarket's official bridge guide](https://github.com/Polymarket/agent-skills/blob/main/bridge.md) and [Hyperliquid onboarding](https://hyperliquid.gitbook.io/hyperliquid-docs/onboarding/how-to-start-trading) for the destination platform flows.
 
@@ -204,7 +204,7 @@ Serve `docs/` over HTTPS (GitHub Pages) or a local HTTP server, for example
 The app calls Relay directly, with no keys or third-party JavaScript. Wallet
 execution requires an injected EIP-1193 provider; CLI/JSON export also works
 without a wallet. CLI commands request fresh unsigned plans, never broadcast.
-Quotes expire after 60 seconds. Chain/account changes require a new quote.
+Quotes must pass the 60-second freshness check before the first send. Subsequent transactions use that first-send time for quote freshness, with a batch limit of transaction count × receipt timeout (120 seconds per transaction by default). Chain/account changes require a new quote. Direct native values and input-token ERC-20 approve/transfer calls are bounded by the quoted input.
 Transaction hashes remain visible after failures; never automatically retry a
 submitted plan. Source confirmation and Relay destination delivery are separate.
 

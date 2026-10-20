@@ -76,3 +76,26 @@ test('basis points accept only digit strings and safe integer numbers', () => {
     }
   }
 });
+
+test('Solana rejects the System Program while retaining the preview address', () => {
+  for (const key of ['user', 'recipient']) assert.throws(() => buildQuotePayload({ ...base, originChain: 'solana', destinationChain: 'solana', [key]: '11111111111111111111111111111111' }), /valid Solana address/);
+  assert.equal(buildQuotePayload({ ...base, originChain: 'solana', destinationChain: 'solana' }).user, DEFAULT_SOLANA_USER);
+});
+test('HTTP error messages tolerate null and structured upstream errors', async () => {
+  for (const [data, message] of [[null, 'Request failed'], [{ message: {}, error: {} }, 'Request failed'], [{ message: '', error: 'fallback' }, 'fallback'], [{ message: 'primary', error: 'secondary' }, 'primary']]) {
+    await assert.rejects(fetchTransactionStatus('test', { fetchImpl: async () => new Response(JSON.stringify(data), { status: 400 }) }), e => e.name === 'RelayError' && e.status === 400 && e.message === `Relay HTTP 400: ${message}` && JSON.stringify(e.details) === JSON.stringify(data));
+  }
+});
+test('malformed upstream raw currency amounts become null without losing the quote', async () => {
+  for (const amount of ['1.5', 'bad', {}, [], null, 1.5, '1e6']) {
+    const m = mockRelay();
+    const q = await fetchRelayQuote(buildQuotePayload(base), { fetchImpl: async (...args) => {
+      const data = await (await m.fetchImpl(...args)).json();
+      Object.assign(data.details.currencyOut, { amount, minimumAmount: amount });
+      return new Response(JSON.stringify(data));
+    } });
+    assert.equal(q.currencyOut.amountFormatted, null);
+    assert.equal(q.currencyOut.minimumAmountFormatted, null);
+    assert.equal(q.requestId, 'request-1');
+  }
+});

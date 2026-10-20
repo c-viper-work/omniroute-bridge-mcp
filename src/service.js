@@ -6,6 +6,8 @@ export function listSupportedRoutes({ chain } = {}) {
 export async function getBridgeQuote({ fromChain, toChain, fromToken = 'native', toToken = 'native', amount, userAddress, recipientAddress, slippageBps, fromTokenDecimals, toTokenDecimals }, options = {}) {
   const from = resolveChain(fromChain), to = resolveChain(toChain);
   const input = resolveToken(from, fromToken, fromTokenDecimals), output = resolveToken(to, toToken, toTokenDecimals);
+  const sameToken = from.vmType === 'evm' ? input.address.toLowerCase() === output.address.toLowerCase() : input.address === output.address;
+  if (from.chainId === to.chainId && sameToken) throw new Error('Source and destination token cannot be identical on the same chain');
   const payload = buildQuotePayload({ originChain: from, destinationChain: to, originToken: input, destinationToken: output, amountRaw: parseUnits(amount, input.decimals), user: userAddress, recipient: recipientAddress, slippageTolerance: slippageBps, feeRecipient: options.feeRecipient, feeBps: options.feeBps });
   const quote = await fetchRelayQuote(payload, options);
   const placeholders = [DEFAULT_EVM_USER.toLowerCase(), DEFAULT_SOLANA_USER];
@@ -17,19 +19,34 @@ function plan(kind, quotes, notes = []) {
 }
 export async function getPolymarketOnboardPlan({ fromChain, fromToken = 'native', amount, recipientAddress, userAddress, includeGasTopup = true, gasTopupAmountUsd = 2 }, options = {}) {
   if (typeof includeGasTopup !== 'boolean') throw new Error('includeGasTopup must be a boolean');
-  if (!/^(\d+)(\.\d+)?$/.test(String(gasTopupAmountUsd)) || !Number.isFinite(Number(gasTopupAmountUsd))) throw new Error('gasTopupAmountUsd must be a non-negative decimal');
+  if (includeGasTopup) {
+    const gasStr = String(gasTopupAmountUsd);
+    if (typeof gasTopupAmountUsd === 'boolean' || !/^(\d+)(\.\d+)?$/.test(gasStr) || BigInt(gasStr.split('.')[0]) > 50n || (BigInt(gasStr.split('.')[0]) === 50n && /[1-9]/.test(gasStr.split('.')[1] ?? ''))) throw new Error('gasTopupAmountUsd must be a non-negative decimal up to 50');
+  }
   const args = { fromChain, fromToken, amount, recipientAddress, userAddress, toChain: 'polygon' };
   const primary = await getBridgeQuote({ ...args, toToken: 'USDC.e' }, options);
   const quotes = [primary];
-  if (includeGasTopup && Number(gasTopupAmountUsd) > 0) {
+  if (includeGasTopup && /[1-9]/.test(String(gasTopupAmountUsd)) && !(primary.originChain.chainId === 137 && /^0x0{40}$/i.test(primary.inputToken.address))) {
     // Value the source token from the primary quote, never treat ETH/SOL units as USD.
     const amountUsd = primary.currencyIn.amountUsd;
     if (amountUsd == null || !/^\d+(\.\d+)?$/.test(String(amountUsd)) || !/[1-9]/.test(String(amountUsd))) throw new Error('Primary quote amountUsd must be a positive decimal');
+    const outputUsd = primary.currencyOut.amountUsd;
+    const ratio = Number(amountUsd) / Number(outputUsd);
+    if (outputUsd == null || !/^\d+(\.\d+)?$/.test(String(outputUsd)) || !/[1-9]/.test(String(outputUsd)) || !(ratio >= 0.5 && ratio <= 2)) throw new Error('Primary quote amountUsd failed sanity check against output USD');
+    const outRaw = primary.currencyOut.amount;
+    if (outRaw == null || !/^\d+$/.test(String(outRaw)) || BigInt(outRaw) <= 0n) throw new Error('Primary quote amountUsd failed sanity check against output USD');
+    const outTokenUnits = Number(formatUnits(outRaw, primary.outputToken.decimals));
+    if (!(Number(outputUsd) / outTokenUnits >= 0.8 && Number(outputUsd) / outTokenUnits <= 1.2)) throw new Error('Primary quote amountUsd failed sanity check against output USD');
+    if (['USDC', 'USDT', 'USDC.e'].includes(primary.inputToken.symbol)) {
+      const inputRatio = Number(amountUsd) / Number(formatUnits(primary.payload.amount, primary.inputToken.decimals));
+      if (!(inputRatio >= 0.8 && inputRatio <= 1.2)) throw new Error('Primary quote amountUsd failed sanity check against output USD');
+    }
     const fracLen = value => (String(value).split('.')[1] ?? '').length;
     const usdScale = Math.max(18, fracLen(amountUsd), fracLen(gasTopupAmountUsd));
     const sourceUsd = parseUnits(amountUsd, usdScale);
     const targetUsd = parseUnits(gasTopupAmountUsd, usdScale);
     const raw = (BigInt(primary.payload.amount) * targetUsd + sourceUsd - 1n) / sourceUsd;
+    if (raw > BigInt(primary.payload.amount) * 10n) throw new Error('Gas top-up spend cannot exceed 10x primary input amount');
     quotes.push(await getBridgeQuote({ ...args, amount: formatUnits(raw, primary.inputToken.decimals), toToken: 'POL' }, options));
   }
   return plan('polymarket', quotes, ['Gas top-up is an additional source-token spend, valued approximately in USD; output POL is after fees.', 'USDC.e arrives at the specified Polygon wallet. Use the correct Polymarket wallet; account setup, approvals and deposits may still be required.']);
@@ -67,7 +84,7 @@ const tool = (name, title, description, properties, required, openWorldHint = tr
 export const TOOLS = [
   tool('list_supported_chains_and_tokens', 'Supported chains and tokens', 'List eight supported chains, token addresses, onboarding presets and the disclosed 30 bps integrator fee.', { chain: chainProp }, [], false),
   tool('get_cross_chain_bridge_quote', 'Cross-chain bridge quote', 'Fetch a Relay quote with fee breakdown and unsigned steps. Never signs or broadcasts; missing sender creates a preview.', { ...sourceProps, toChain: chainProp, toToken: str('Destination token symbol, native, or raw contract/mint address.'), fromTokenDecimals: { type: 'integer', minimum: 0, maximum: 255, description: 'Required decimal precision for an unregistered raw source token address.' }, toTokenDecimals: { type: 'integer', minimum: 0, maximum: 255, description: 'Required decimal precision for an unregistered raw destination token address.' }, slippageBps: { type: 'integer', minimum: 0, maximum: 10000, description: 'Maximum slippage in basis points: 50 means 0.50%. Omit for Relay automatic tolerance.' } }, ['fromChain', 'toChain', 'amount']),
-  tool('polymarket_one_click_onboard', 'Polymarket onboarding plan', 'Plan Polygon USDC.e plus optional POL gas. Extra gas spends additional input; this does not create a trading account.', { ...sourceProps, includeGasTopup: { type: 'boolean', default: true, description: 'Whether to quote a separate native POL top-up in addition to the full primary input.' }, gasTopupAmountUsd: { type: 'number', minimum: 0, default: 2, description: 'Approximate USD source spend for POL gas, before fees, valued from the primary quote; zero disables it.' } }, ['fromChain', 'amount']),
+  tool('polymarket_one_click_onboard', 'Polymarket onboarding plan', 'Plan Polygon USDC.e plus optional POL gas. Extra gas spends additional input; this does not create a trading account.', { ...sourceProps, includeGasTopup: { type: 'boolean', default: true, description: 'Whether to quote a separate native POL top-up in addition to the full primary input.' }, gasTopupAmountUsd: { type: 'number', minimum: 0, maximum: 50, default: 2, description: 'Approximate USD source spend for POL gas, before fees, valued from the primary quote; zero disables it.' } }, ['fromChain', 'amount']),
   tool('hyperliquid_one_click_onboard', 'Hyperliquid onboarding plan', 'Plan HyperEVM HYPE or Arbitrum USDC funding. L1 deposits remain a separate action.', { ...sourceProps, targetMode: { type: 'string', enum: ['hyperevm_hype', 'arbitrum_usdc', 'both'], default: 'hyperevm_hype', description: 'Funding destination. both quotes two routes, each spending the entire specified source amount.' } }, ['fromChain', 'amount']),
   tool('multi_wallet_gas_refuel', 'Multi-wallet gas refuel', 'Quote native gas delivery for 1–20 recipients without broadcasting, preserving recipient order.', { fromChain: chainProp, fromToken: sourceProps.fromToken, targetChain: chainProp, amountPerWallet: str('Positive decimal source-token amount spent for EACH wallet, not the amount of destination gas.'), recipients: { type: 'array', minItems: 1, maxItems: 20, items: str('Destination wallet address matching the target chain VM.'), description: 'Ordered list of 1–20 destination addresses. Duplicate addresses intentionally receive multiple allocations.' }, senderAddress: sourceProps.userAddress }, ['fromChain', 'targetChain', 'amountPerWallet', 'recipients']),
   tool('check_bridge_order_status', 'Bridge order status', 'Read Relay intent status v2 for a request ID. Does not submit or retry transactions.', { requestId: str('Relay requestId returned by the quote or executable step, at most 256 characters.') }, ['requestId'])
@@ -79,12 +96,17 @@ export async function callTool(name, args = {}, options) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Arguments must be an object');
   const schema = TOOLS[i].inputSchema;
   for (const required of schema.required) if (args[required] === undefined) throw new Error(`Missing required argument: ${required}`);
-  for (const [key, value] of Object.entries(args)) {
+  const cleanArgs = {};
+  for (let [key, value] of Object.entries(args)) {
+    if (!Object.hasOwn(schema.properties, key)) throw new Error(`Unknown argument: ${key}`);
     const p = schema.properties[key];
-    if (!p) throw new Error(`Unknown argument: ${key}`);
+    if (value === undefined && !schema.required.includes(key)) continue;
+    if (value === null && !schema.required.includes(key) && p.type === 'string') continue;
+    if ((key === 'amount' || key === 'amountPerWallet') && typeof value === 'number' && Number.isFinite(value) && value > 0 && Math.abs(value) <= Number.MAX_SAFE_INTEGER && /^\d+(\.\d+)?$/.test(String(value))) value = String(value);
     if (p.type === 'array' ? !Array.isArray(value) : p.type === 'integer' ? !Number.isInteger(value) : typeof value !== p.type) throw new Error(`Invalid type for ${key}: expected ${p.type}`);
     if (p.enum && !p.enum.includes(value)) throw new Error(`Invalid ${key}`);
     if (typeof value === 'number' && (!Number.isFinite(value) || value < (p.minimum ?? -Infinity) || value > (p.maximum ?? Infinity))) throw new Error(`Out of range: ${key}`);
+    cleanArgs[key] = value;
   }
-  return handlers[i](args, options);
+  return handlers[i](cleanArgs, options);
 }

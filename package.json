@@ -1,6 +1,6 @@
 {
   "name": "omniroute-bridge-mcp",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Instant cross-chain bridge, Polymarket & Hyperliquid one-click onboarding, and multi-wallet gas refuel MCP server & CLI powered by Relay Protocol.",
   "type": "module",
   "bin": { "omniroute-bridge": "./bin/omniroute.js", "omniroute-bridge-mcp": "./bin/omniroute.js" },

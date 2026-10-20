@@ -1,7 +1,7 @@
 import { listSupportedRoutes, getBridgeQuote, getPolymarketOnboardPlan, getHyperliquidOnboardPlan, planMultiWalletGasRefuel, checkBridgeOrderStatus } from './service.js';
 import { startMcpServer } from './mcp-server.js';
 import { DEFAULT_FEE_BPS, formatUnits } from './constants.js';
-export const HELP = `omniroute-bridge 1.1.0 — Relay cross-chain terminal
+export const HELP = `omniroute-bridge 1.2.0 — Relay cross-chain terminal
 
 Usage:
   omniroute-bridge mcp | --mcp | --stdio
@@ -41,19 +41,25 @@ function routeSummary(quotes) {
 export async function runCli(argv, { stdout = process.stdout, stderr = process.stderr, ...options } = {}) {
   try {
     if (!argv.length || argv[0] === '--help' || argv[0] === '-h') { stdout.write(HELP); return 0; }
-    if (argv[0] === '--version') { stdout.write('1.1.0\n'); return 0; }
+    if (argv[0] === '--version') { stdout.write('1.2.0\n'); return 0; }
     const [command, ...args] = argv;
     if (['mcp', '--mcp', '--stdio'].includes(command)) { if (args.length) throw new Error('MCP mode does not accept flags'); await startMcpServer({ ...options, output: stdout }); return 0; }
     if (!Object.hasOwn(allowed, command)) throw new Error(`Unknown command: ${command}`);
     const flags = {};
     for (let i = 0; i < args.length; i++) {
-      const name = args[i].replace(/^--/, '');
+      const equals = args[i].indexOf('=');
+      const inline = equals !== -1;
+      const name = (inline ? args[i].slice(0, equals) : args[i]).replace(/^--/, '');
       const flag = Object.hasOwn(aliases, name) ? aliases[name] : name;
       if (!args[i].startsWith('--') || ![...allowed[command], 'json'].includes(flag)) throw new Error(`Unknown option: ${args[i]}`);
+      if (inline && ['json', 'no-gas'].includes(flag)) throw new Error(`Unknown option: ${args[i]}`);
       if (Object.hasOwn(flags, flag)) throw new Error(`Duplicate option: --${flag}`);
       if (['json', 'no-gas'].includes(flag)) flags[flag] = true;
+      else if (inline) { const value = args[i].slice(equals + 1); if (!value) throw new Error(`Missing value for --${flag}`); flags[flag] = value; }
       else { if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`Missing value for --${flag}`); flags[flag] = args[++i]; }
     }
+    const required = { quote: ['from', 'to', 'amount'], polymarket: ['from', 'amount'], hyperliquid: ['from', 'amount'], refuel: ['from', 'to', 'amount-per-wallet', 'recipients'], status: ['request-id'] };
+    for (const req of required[command] ?? []) if (!Object.hasOwn(flags, req)) throw new Error(`Missing required option: --${req}`);
     const common = { fromChain: flags.from, fromToken: flags.token, amount: flags.amount, recipientAddress: flags.recipient, userAddress: flags.sender };
     let result;
     switch (command) {

@@ -89,6 +89,7 @@ test('duplicate click, form invalidation, and unknown submission never auto-rese
 test('CLI export quotes shell metacharacters and includes all route inputs',()=>{
   assert.equal(shellQuote("a'b;$(x)"),"'a'\\''b;$(x)'");
   const c=cliCommand('polymarket',{...bridgeArgs,includeGasTopup:false,gasTopupAmountUsd:'2'});assert.match(c,/--no-gas/);assert.match(c,/--sender '/);assert.match(c,/--gas-usd '2'/);assert.ok(c.endsWith('--json'));
+  const noGas=cliCommand('polymarket',{...bridgeArgs,includeGasTopup:false,gasTopupAmountUsd:''});assert.match(noGas,/--no-gas/);assert.doesNotMatch(noGas,/--gas-usd/);
 });
 // Minimal DOM harness executes the real browser event handlers with synthetic Relay/provider.
 test('quick controls are non-submit buttons and CSP remains exact', () => {
@@ -215,7 +216,22 @@ async function ui() {
   const tabs=['tab-bridge','tab-express','tab-refuel'].map((id,i)=>{const e=els.get(id);e.dataset.mode=['quote','express','refuel'][i];return e;});
   els.get('express-mode').value='polymarket';els.get('gas-usd').value='2';els.get('include-gas').checked=true;
   const relay=mockRelay();const wallet=provider({eth_requestAccounts:()=>[USER]});const events={};wallet.on=(n,fn)=>events[n]=fn;
-  const constants=await import('../docs/lib/constants.js');const context={...constants,WalletExecutor,preflight,cliCommand,document:{getElementById:id=>els.get(id),querySelectorAll:()=>tabs,createElement:()=>new Element()},window:{ethereum:wallet},navigator:{clipboard:{writeText:async s=>{context.copied=s;}}},setInterval(){},getBridgeQuote:a=>getBridgeQuote(a,relay),getPolymarketOnboardPlan:a=>getPolymarketOnboardPlan(a,relay),getHyperliquidOnboardPlan:a=>getHyperliquidOnboardPlan(a,relay),planMultiWalletGasRefuel:a=>planMultiWalletGasRefuel(a,relay),statusRequests:[],checkBridgeOrderStatus:async args=>{context.statusRequests.push(args.requestId);return {status:'success'};}};
+  // Presets can request 100 USDC; value stablecoin fixtures from their actual input.
+  const fetchQuote = relay.fetchImpl;
+  relay.fetchImpl = async (...args) => {
+    const response = await fetchQuote(...args);
+    const data = await response.json();
+    const payload = JSON.parse(args[1].body);
+    if (payload.originCurrency.toLowerCase() === bridgeArgsToken.toLowerCase()) {
+      const units = Number(payload.amount) / 1e6;
+      data.details.currencyIn.amountUsd = String(units);
+      data.details.currencyOut.amountUsd = String(units * 0.99);
+      data.details.currencyOut.amount = String(Math.round(Number(payload.amount) * 0.99));
+    }
+    return new Response(JSON.stringify(data));
+  };
+  const bridgeArgsToken = (await import('../docs/lib/constants.js')).CHAINS.base.tokens.USDC.address;
+  const constants=await import('../docs/lib/constants.js');const context={...constants,WalletExecutor,preflight,cliCommand,document:{getElementById:id=>els.get(id),querySelectorAll:()=>tabs,createElement:()=>new Element()},window:{ethereum:wallet},navigator:{clipboard:{writeText:async s=>{context.copied=s;}}},setInterval(fn){context.tick=fn;},getBridgeQuote:a=>getBridgeQuote(a,relay),getPolymarketOnboardPlan:a=>getPolymarketOnboardPlan(a,relay),getHyperliquidOnboardPlan:a=>getHyperliquidOnboardPlan(a,relay),planMultiWalletGasRefuel:a=>planMultiWalletGasRefuel(a,relay),statusRequests:[],checkBridgeOrderStatus:async args=>{context.statusRequests.push(args.requestId);return {status:'success'};}};
   runInNewContext(app.replace(/^import .*;\n/gm,''),context);return {els,tabs,relay,wallet,events,context};
 }
 test('browser connect, requote, export, execution, wallet invalidation and keyboard tabs',async()=>{
@@ -341,3 +357,157 @@ for (const rejectSecond of [false, true]) {
     assert.deepEqual(context.statusRequests, rejectSecond ? ['request-1'] : ['request-1', 'request-2']);
   });
 }
+
+test('preflight validates matching origin token addresses independent of transaction target', async () => {
+  const p = await fixture(), q = p.quotes[0];
+  q.inputToken.address = q.payload.originCurrency.toUpperCase();
+  assert.equal(preflight(p, USER).length, 1);
+  q.inputToken.address = USER;
+  assert.throws(() => preflight(p, USER), /Invalid transaction calldata or sender/);
+  delete q.inputToken;
+  assert.equal(preflight(p, USER).length, 1);
+  q.payload.originCurrency = '';
+  assert.throws(() => preflight(p, USER), /Invalid transaction calldata or sender/);
+});
+test('preflight bounds approvals to the input token, spender encoding and quoted amount', async () => {
+  const base = await fixture(), q = base.quotes[0], d = q.steps[0].items[0].data;
+  d.to = q.inputToken.address;
+  d.data = '0x095ea7b3' + '0'.repeat(24) + USER.slice(2) + BigInt(q.payload.amount).toString(16).padStart(64, '0');
+  assert.equal(preflight(base, USER).length, 1);
+  for (const mutate of [
+    (q,d) => { d.value = '1'; },
+    (q,d) => { d.to = USER; },
+    (q,d) => { d.data += '00'; },
+    (q,d) => { d.data = d.data.slice(0, -2); },
+    (q,d) => { d.data = d.data.slice(0, 10) + '1' + d.data.slice(11); },
+    (q,d) => { d.data = d.data.slice(0, 10) + '0'.repeat(64) + d.data.slice(74); },
+    (q,d) => { d.data = d.data.slice(0, 74) + (BigInt(q.payload.amount) + 1n).toString(16).padStart(64, '0'); },
+    q => { q.inputToken.address = '0x' + '0'.repeat(40); }
+  ]) {
+    const p = structuredClone(base); mutate(p.quotes[0], p.quotes[0].steps[0].items[0].data);
+    assert.throws(() => preflight(p, USER), /Invalid transaction calldata or sender/);
+  }
+  d.data = d.data.slice(0, 74) + '0'.repeat(64);
+  assert.equal(preflight(base, USER).length, 1); // Approval reset is allowed.
+});
+test('preflight sums approvals and transfers across all items and steps per quote', async () => {
+  for (const secondSelector of ['0x095ea7b3', '0xa9059cbb']) {
+    for (const separateSteps of [false, true]) {
+      const p = await fixture(), q = p.quotes[0];
+      const item = q.steps[0].items[0];
+      item.data.to = q.inputToken.address;
+      item.data.data = '0x095ea7b3' + '0'.repeat(24) + USER.slice(2) + BigInt(q.payload.amount).toString(16).padStart(64, '0');
+      const second = structuredClone(item);
+      second.data.data = secondSelector + item.data.data.slice(10);
+      if (separateSteps) q.steps.push({ kind: 'transaction', items: [second] });
+      else q.steps[0].items.push(second);
+      assert.throws(() => preflight(p, USER), /Invalid transaction calldata or sender/);
+    }
+  }
+});
+test('preflight accepts approval reset then full approval followed by router deposit', async () => {
+  const p = await fixture(), q = p.quotes[0];
+  const deposit = structuredClone(q.steps[0]);
+  const approval = q.steps[0].items[0];
+  approval.data.to = q.inputToken.address;
+  approval.data.data = '0x095ea7b3' + '0'.repeat(24) + deposit.items[0].data.to.slice(2) + '0'.repeat(64);
+  const fullApproval = structuredClone(q.steps[0]);
+  fullApproval.items[0].data.data = approval.data.data.slice(0, 74) + BigInt(q.payload.amount).toString(16).padStart(64, '0');
+  q.steps.push(fullApproval, deposit);
+  assert.deepEqual(preflight(p, USER).map(({ tx }) => tx.data), [approval.data.data, fullApproval.items[0].data.data, deposit.items[0].data.data]);
+});
+test('preflight rejects third-party approval and permit selectors for token and native inputs', async () => {
+  for (const selector of ['0x095ea7b3', '0x39509351', '0x87517c45', '0xd73dd623', '0xa22cb465', '0xd505accf']) {
+    for (const native of [false, true]) {
+      const p = await fixture(), q = p.quotes[0];
+      if (native) q.inputToken.address = q.payload.originCurrency = '0x' + '0'.repeat(40);
+      const d = q.steps[0].items[0].data;
+      d.to = USER;
+      d.data = selector + '0'.repeat(24) + USER.slice(2) + '1'.padStart(64, '0');
+      assert.throws(() => preflight(p, USER), /Invalid transaction calldata or sender/);
+    }
+  }
+});
+test('native values are summed across incomplete steps per quote; token spends require zero value', async () => {
+  const p = await fixture(), q = p.quotes[0];
+  q.steps[0].items[0].data.value = '1';
+  assert.throws(() => preflight(p, USER), /Invalid transaction calldata or sender/);
+  q.inputToken.address = q.payload.originCurrency = '0x' + '0'.repeat(40); q.payload.amount = '10';
+  q.steps[0].items[0].data.value = '6';
+  q.steps.push(structuredClone(q.steps[0])); q.steps[1].items[0].data.value = '4';
+  assert.equal(preflight(p, USER).length, 2);
+  q.steps[1].items[0].data.value = '5';
+  assert.throws(() => preflight(p, USER), /Invalid transaction calldata or sender/);
+  q.steps[1].items[0].status = 'complete';
+  assert.equal(preflight(p, USER).length, 1);
+  p.quotes.push(structuredClone(q));
+  assert.equal(preflight(p, USER).length, 2);
+});
+test('multi-transaction batch survives 45-second confirmations but enforces total time limit', async () => {
+  for (const delay of [45000, 360000, 360001]) {
+    const p = await fixture(); let now = Date.parse(p.quotes[0].quotedAt) + 30000;
+    p.quotes[0].steps.push(structuredClone(p.quotes[0].steps[0]), structuredClone(p.quotes[0].steps[0]));
+    let receipts = 0;
+    const wallet = provider({ eth_getTransactionReceipt: () => { if (receipts++ === 0) now += delay; return { status: '0x1' }; } });
+    const runner = new WalletExecutor(wallet, { now: () => now });
+    if (delay > 360000) await assert.rejects(runner.execute(p, USER), /Quote expired/);
+    else await runner.execute(p, USER);
+    assert.equal(wallet.calls.filter(c => c.method === 'eth_sendTransaction').length, delay > 360000 ? 1 : 3);
+    assert.equal(runner.attempted.has(p), true);
+  }
+});
+test('pre-send chain switch, account mismatch and expiry do not lock a plan', async () => {
+  for (const mode of ['chain', 'account', 'expiry']) {
+    const p = await fixture(); let now = Date.parse(p.quotes[0].quotedAt), chain = '0x1';
+    const wallet = provider(mode === 'chain' ? { eth_chainId: () => chain, wallet_switchEthereumChain: () => { chain = '0x2105'; } } : { eth_accounts: () => { if (mode === 'expiry') now += 61000; return mode === 'account' ? [] : [USER]; } });
+    const runner = new WalletExecutor(wallet, { now: () => now });
+    await assert.rejects(runner.execute(p, USER), /Chain switched|account or chain changed|expired/);
+    assert.equal(runner.attempted.has(p), false);
+    assert.equal(wallet.calls.filter(c => c.method === 'eth_sendTransaction').length, 0);
+  }
+});
+test('timer preserves status messages and reports expiry only when execution becomes disabled', async () => {
+  const { els, context } = await ui();
+  els.get('amount').value = '1'; await els.get('quote-form').fire('submit');
+  els.get('status').textContent = 'Copied JSON'; context.tick();
+  assert.equal(els.get('status').textContent, 'Copied JSON');
+  await els.get('connect').click(); await els.get('quote-form').fire('submit');
+  assert.equal(els.get('execute').disabled, false);
+  context.preflight = () => { throw new Error('Quote expired. Request and review a fresh quote.'); };
+  context.tick(); assert.match(els.get('status').textContent, /Quote expired/);
+  assert.equal(els.get('execute').disabled, true);
+  els.get('status').textContent = 'Delivery status: success'; context.tick();
+  assert.equal(els.get('status').textContent, 'Delivery status: success');
+});
+
+test('input-token calls reject allowance increases, transferFrom and unbounded transfers', async () => {
+  const base = await fixture(), q = base.quotes[0];
+  const encode = (selector, amount) => selector + '0'.repeat(24) + USER.slice(2) + amount.toString(16).padStart(64, '0');
+  const item = q.steps[0].items[0];
+  item.data.to = q.inputToken.address;
+  const quoted = BigInt(q.payload.amount);
+  for (const selector of ['0x39509351', '0x23b872dd', '0xdeadbeef']) {
+    item.data.data = encode(selector, 1n);
+    assert.throws(() => preflight(base, USER), /Invalid transaction calldata or sender/);
+  }
+  item.data.data = encode('0xa9059cbb', quoted + 1n);
+  assert.throws(() => preflight(base, USER), /Invalid transaction calldata or sender/);
+  for (const amount of [1n, quoted]) {
+    item.data.data = encode('0xa9059cbb', amount);
+    assert.equal(preflight(base, USER).length, 1);
+  }
+  for (const malformed of [encode('0xa9059cbb', 1n) + '00', '0xa9059cbb' + '0'.repeat(128)]) {
+    item.data.data = malformed;
+    assert.throws(() => preflight(base, USER), /Invalid transaction calldata or sender/);
+  }
+  item.data.data = encode('0xa9059cbb', quoted / 2n);
+  q.steps.push(structuredClone(q.steps[0]));
+  assert.equal(preflight(base, USER).length, 2);
+  q.steps[1].items[0].data.data = encode('0xa9059cbb', quoted / 2n + 1n);
+  assert.throws(() => preflight(base, USER), /Invalid transaction calldata or sender/);
+  q.steps[1].items[0].status = 'complete';
+  assert.equal(preflight(base, USER).length, 1);
+  item.data.to = USER;
+  item.data.data = encode('0x39509351', 1n);
+  assert.throws(() => preflight(base, USER), /Invalid transaction calldata or sender/);
+});

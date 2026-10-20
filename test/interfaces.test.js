@@ -300,3 +300,40 @@ for (const failure of ['close', 'error']) test(`MCP releases a drain wait on out
   assert.equal(output.listenerCount('drain'), 0);
   assert.equal(input.listenerCount('data'), 0);
 });
+
+test('CLI inline flags support aliases, equals in values, and canonical duplicate errors', async () => {
+  const m = mockRelay();
+  assert.equal((await cli(['quote', '--source-chain=base', '--to=polygon', '--amount=1', '--json'], m)).code, 0);
+  assert.equal(m.calls[0].payload.originChainId, 8453);
+  const status = mockRelay();
+  assert.equal((await cli(['status', '--id=a=b', '--json'], status)).code, 0);
+  assert.ok(status.calls[0].url.endsWith('requestId=a%3Db'));
+  for (const args of [['--from=base', '--source-chain', 'base'], ['--from', 'base', '--source-chain=base']]) assert.match((await cli(['quote', ...args])).err, /Duplicate option: --from/);
+  for (const flag of ['--json=true', '--no-gas=false']) assert.match((await cli(['polymarket', flag])).err, /Unknown option/);
+  assert.match((await cli(['quote', '--source-chain='])).err, /Missing value for --from/);
+});
+test('CLI required options fail explicitly before network and version is 1.2.0', async () => {
+  const required = { quote: ['from', 'to', 'amount'], polymarket: ['from', 'amount'], hyperliquid: ['from', 'amount'], refuel: ['from', 'to', 'amount-per-wallet', 'recipients'], status: ['request-id'] };
+  for (const [command, flags] of Object.entries(required)) for (const missing of flags) {
+    const m = mockRelay();
+    const r = await cli([command, ...flags.filter(f => f !== missing).map(f => `--${f}=value`)], m);
+    assert.equal(r.err, `Error: Missing required option: --${missing}\n`);
+    assert.equal(m.calls.length, 0);
+  }
+  assert.equal((await cli(['--version'])).out, '1.2.0\n');
+  assert.match((await cli(['--help'])).out, /1\.2\.0/);
+  assert.equal((await handleRpc({ jsonrpc: '2.0', id: 1, method: 'initialize' })).result.serverInfo.version, '1.2.0');
+});
+test('NDJSON bare-LF colon line returns parse error without waiting for EOF or headers', async () => {
+  const input = new PassThrough(), output = new PassThrough();
+  const done = startMcpServer({ input, output });
+  const received = []; output.on('data', chunk => received.push(String(chunk)));
+  input.write('foo: bar\n');
+  // Allow queued RPC work to run while keeping the input stream open.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(received.length, 1);
+  assert.equal(JSON.parse(received[0]).error.code, -32700);
+  input.end('{"jsonrpc":"2.0","id":7,"method":"ping"}\n');
+  await done;
+  assert.equal(JSON.parse(received[1]).id, 7);
+});
